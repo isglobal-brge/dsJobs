@@ -1,12 +1,15 @@
 # Module: Disclosure Controls
-# dsJobs disclosure settings, read from server-side R options.
+# Standard DataSHIELD disclosure settings for dsJobs.
 
+#' Read a dsJobs option with DataSHIELD double-fallback
+#'
+#' Option chain: dsjobs.{name} -> default.dsjobs.{name} -> default.
 #' @keywords internal
-.dsjobs_trust_profile <- function() {
+.dsj_disclosure_settings <- function() {
   list(
-    name                     = .dsj_option("privacy_profile", "default"),
-    min_train_rows           = as.numeric(.dsj_option("min_train_rows", 100)),
-    allow_exact_num_examples = as.logical(.dsj_option("allow_exact_num_examples", FALSE))
+    nfilter_subset = as.numeric(
+      getOption("nfilter.subset", getOption("default.nfilter.subset", 3))
+    )
   )
 }
 

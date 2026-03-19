@@ -78,11 +78,8 @@
   result_dir <- file.path(home, "artifacts", job_id, "result")
   dir.create(result_dir, recursive = TRUE, showWarnings = FALSE)
 
-  trust <- .dsjobs_trust_profile()
-
   safe_result <- list(
     job_id = job_id,
-    profile = trust$name,
     ready = TRUE
   )
 

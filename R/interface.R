@@ -398,7 +398,6 @@ jobOutputsDS <- function(job_id_or_symbol, access_token = NULL) {
 #' @export
 jobCapabilitiesDS <- function() {
   settings <- .dsjobs_settings()
-  trust <- .dsjobs_trust_profile()
   runners <- .list_runners()
   runner_details <- lapply(runners, function(r) {
     cfg <- .load_runner_config(r)
@@ -415,7 +414,7 @@ jobCapabilitiesDS <- function() {
        max_jobs_per_user = settings$max_jobs_per_user,
        max_jobs_global = settings$max_jobs_global,
        max_steps_per_job = settings$max_steps_per_job,
-       privacy_profile = trust$name, worker = worker_health,
+       worker = worker_health,
        admin_enabled = .admin_is_configured())
 }
 
