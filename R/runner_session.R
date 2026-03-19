@@ -82,8 +82,8 @@
     summary$output_size_bytes <- sum(file.info(files)$size, na.rm = TRUE)
 
     # Count rows in output tables for summary reporting.
-    # nfilter enforcement happens at dsImaging (resolve_dataset) and
-    # dsFlower (prepareRun) layers, not here. The summary only reports
+    # nfilter enforcement happens at upstream layers, not here.
+    # The summary only reports
     # bucketed counts -- the data already exists on the server.
     for (f in files) {
       if (grepl("\\.csv$", f, ignore.case = TRUE)) {

@@ -26,7 +26,6 @@ Imports:
     uuid
 Suggests:
     yaml,
-    dsFlower,
     dsImaging,
     testthat (>= 3.0.0),
     withr,

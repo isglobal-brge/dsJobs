@@ -185,7 +185,7 @@ jobCancelDS <- function(job_id_or_symbol, access_token = NULL) {
 #'
 #' When \code{as_descriptor = TRUE} and the output is a Parquet file,
 #' returns a \code{FlowerDatasetDescriptor} instead of loading the data
-#' into memory. This enables zero-copy column projection with dsFlower.
+#' into memory. This enables zero-copy column projection downstream.
 #'
 #' @param job_id_or_symbol Character; job ID or symbol name
 #' @param output_name Character; name of the output to load

@@ -1,22 +1,11 @@
 # Module: Disclosure Controls
-# dsJobs has its own disclosure settings, independent of dsFlower.
-# When dsFlower is available, dsJobs delegates to it for trust profile
-# resolution. Otherwise, dsJobs reads its own server options directly.
+# dsJobs disclosure settings, read from server-side R options.
 
 #' @keywords internal
 .dsjobs_trust_profile <- function() {
-  # If dsFlower is available, delegate entirely -- dsFlower owns profile
-  # definitions, dsJobs should not duplicate them.
-  if (requireNamespace("dsFlower", quietly = TRUE)) {
-    profile <- tryCatch(dsFlower:::.flowerTrustProfile(), error = function(e) NULL)
-    if (!is.null(profile)) return(profile)
-  }
-
-  # Standalone mode: read directly from server options.
-  # No profile table -- the admin sets values explicitly.
   list(
-    name           = .dsj_option("privacy_profile", "default"),
-    min_train_rows = as.numeric(.dsj_option("min_train_rows", 100)),
+    name                     = .dsj_option("privacy_profile", "default"),
+    min_train_rows           = as.numeric(.dsj_option("min_train_rows", 100)),
     allow_exact_num_examples = as.logical(.dsj_option("allow_exact_num_examples", FALSE))
   )
 }

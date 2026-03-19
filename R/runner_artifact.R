@@ -60,12 +60,6 @@
       return(list(python = runner_config$python))
   }
 
-  # Try dsFlower venvs for Flower-related frameworks
-  fw <- runner_config$framework
-  if (!is.null(fw) && requireNamespace("dsFlower", quietly = TRUE))
-    tryCatch({ e <- dsFlower:::.ensure_python_env(fw); return(list(python = e$python)) },
-             error = function(e) NULL)
-
   # System python fallback
   py <- Sys.which("python3")
   if (!nzchar(py)) py <- Sys.which("python")
