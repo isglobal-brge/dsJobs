@@ -23,6 +23,38 @@
   x
 }
 
+#' Verify access token for a job
+#'
+#' For private jobs: token required. For global jobs: token not required
+#' for read operations (safe results). Write operations (cancel) always
+#' require token.
+#'
+#' @param db DBI connection.
+#' @param job Named list from .store_get_job().
+#' @param access_token Character; the plaintext token from client.
+#' @param require_for_global Logical; if TRUE, require token even for global jobs.
+#' @keywords internal
+.verify_token <- function(db, job, access_token, require_for_global = FALSE) {
+  is_global <- identical(job$visibility, "global")
+
+  # Global jobs: read access without token (safe results only)
+  if (is_global && !require_for_global) return(invisible(TRUE))
+
+  # Private jobs or write operations: token required
+  if (is.null(access_token) || !nzchar(access_token))
+    stop("Access denied: access_token required for this job.", call. = FALSE)
+
+  stored_hash <- job$access_token_hash
+  if (is.null(stored_hash) || is.na(stored_hash))
+    return(invisible(TRUE))  # Legacy jobs without token
+
+  provided_hash <- .hash_token(access_token)
+  if (!identical(provided_hash, stored_hash))
+    stop("Access denied: invalid access_token.", call. = FALSE)
+
+  invisible(TRUE)
+}
+
 # =============================================================================
 # ASSIGN methods
 # =============================================================================
@@ -48,9 +80,8 @@ jobSubmitDS <- function(spec_encoded) {
 
   .check_quotas(db, owner_id)
 
-  # Generate access token (returned to client, stored as hash)
-  access_token <- .generate_access_token()
-  token_hash <- .hash_token(access_token)
+  # Client generates token, sends hash. Server stores hash only.
+  token_hash <- spec$.access_token_hash
   .store_create_job(db, job_id, owner_id, spec, length(spec$steps),
                      access_token_hash = token_hash)
 
@@ -78,20 +109,21 @@ jobSubmitDS <- function(spec_encoded) {
   }
 
   job <- .store_get_job(db, job_id)
-  list(job_id = job_id, access_token = access_token,
+  list(job_id = job_id,
        state = job$state %||% "PENDING",
        submitted_at = job$submitted_at %||% format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"))
 }
 
 #' Cancel a Job
 #' @export
-jobCancelDS <- function(job_id_or_symbol) {
+jobCancelDS <- function(job_id_or_symbol, access_token = NULL) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
 
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found.", call. = FALSE)
+  .verify_token(db, job, access_token, require_for_global = TRUE)
   if (job$state %in% c("FINISHED", "PUBLISHED", "FAILED", "CANCELLED"))
     stop("Job already in terminal state: ", job$state, call. = FALSE)
 
@@ -104,13 +136,14 @@ jobCancelDS <- function(job_id_or_symbol) {
 
 #' Load a Job Output into the Server Session
 #' @export
-jobLoadOutputDS <- function(job_id_or_symbol, output_name) {
+jobLoadOutputDS <- function(job_id_or_symbol, output_name, access_token = NULL) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
 
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found.", call. = FALSE)
+  .verify_token(db, job, access_token)
   if (!job$state %in% c("FINISHED", "PUBLISHED"))
     stop("Job not finished (state: ", job$state, ").", call. = FALSE)
 
@@ -136,12 +169,13 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name) {
 
 #' Get Job Status
 #' @export
-jobStatusDS <- function(job_id_or_symbol) {
+jobStatusDS <- function(job_id_or_symbol, access_token = NULL) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found: ", job_id, call. = FALSE)
+  .verify_token(db, job, access_token)
 
   list(job_id = job$job_id, state = job$state,
     step_index = as.integer(job$step_index),
@@ -155,12 +189,13 @@ jobStatusDS <- function(job_id_or_symbol) {
 
 #' Get Job Result
 #' @export
-jobResultDS <- function(job_id_or_symbol) {
+jobResultDS <- function(job_id_or_symbol, access_token = NULL) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found.", call. = FALSE)
+  .verify_token(db, job, access_token)
 
   if (!job$state %in% c("FINISHED", "PUBLISHED"))
     return(list(job_id = job_id, state = job$state, ready = FALSE,
@@ -178,11 +213,14 @@ jobResultDS <- function(job_id_or_symbol) {
 
 #' Get Job Logs
 #' @export
-jobLogsDS <- function(job_id_or_symbol, last_n = 50L) {
+jobLogsDS <- function(job_id_or_symbol, last_n = 50L, access_token = NULL) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   last_n <- as.integer(last_n %||% 50L)
   db <- .db_connect()
   on.exit(.db_close(db))
+  job <- .store_get_job(db, job_id)
+  if (is.null(job)) stop("Job not found.", call. = FALSE)
+  .verify_token(db, job, access_token)
 
   home <- .dsjobs_home()
   lines <- character(0)
@@ -246,10 +284,13 @@ jobListDS <- function(label = NULL, caller_id = NULL) {
 
 #' List Available Outputs for a Job
 #' @export
-jobOutputsDS <- function(job_id_or_symbol) {
+jobOutputsDS <- function(job_id_or_symbol, access_token = NULL) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
+  job <- .store_get_job(db, job_id)
+  if (is.null(job)) stop("Job not found.", call. = FALSE)
+  .verify_token(db, job, access_token)
   DBI::dbGetQuery(db,
     "SELECT name, kind, safe_for_client, size_bytes FROM outputs
      WHERE job_id = ? ORDER BY id",
