@@ -65,7 +65,7 @@ jobCancelDS <- function(job_id_or_symbol) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
-  .assert_owner(db, job_id)
+  .assert_owner(db, job_id, mode = "write")
 
   job <- .store_get_job(db, job_id)
   if (job$state %in% c("FINISHED", "PUBLISHED", "FAILED", "CANCELLED"))
@@ -154,6 +154,7 @@ jobStatusDS <- function(job_id_or_symbol) {
     job_id = job$job_id, state = job$state,
     step_index = as.integer(job$step_index),
     total_steps = as.integer(job$total_steps),
+    label = job$label, tags = job$tags,
     submitted_at = job$submitted_at, started_at = job$started_at,
     finished_at = job$finished_at, error = job$error_message,
     retries = as.integer(job$retry_count))
@@ -231,21 +232,26 @@ jobLogsDS <- function(job_id_or_symbol, last_n = 50L) {
 
 #' List Jobs (owned by current user)
 #'
-#' DataSHIELD AGGREGATE method.
+#' DataSHIELD AGGREGATE method. Optionally filtered by label so that
+#' domain packages (dsRadiomicsClient, dsImagingClient) can show only
+#' their own jobs.
 #'
+#' @param label Character or NULL; filter by label (e.g. "dsRadiomics").
 #' @return Data.frame.
 #' @export
-jobListDS <- function() {
+jobListDS <- function(label = NULL) {
   owner_id <- .get_owner_id()
   db <- .db_connect()
   on.exit(.db_close(db))
-  jobs <- .store_list_jobs(db, owner_id = owner_id)
+  jobs <- .store_list_jobs(db, owner_id = owner_id, label = label)
   if (nrow(jobs) == 0)
     return(data.frame(job_id = character(0), state = character(0),
-      submitted_at = character(0), progress = character(0),
-      stringsAsFactors = FALSE))
+      label = character(0), visibility = character(0),
+      owner_id = character(0), submitted_at = character(0),
+      progress = character(0), stringsAsFactors = FALSE))
   jobs$progress <- paste0(jobs$step_index, "/", jobs$total_steps)
-  jobs[, c("job_id", "state", "submitted_at", "progress"), drop = FALSE]
+  jobs[, c("job_id", "state", "label", "visibility", "owner_id",
+           "submitted_at", "progress"), drop = FALSE]
 }
 
 #' List Available Outputs for a Job
