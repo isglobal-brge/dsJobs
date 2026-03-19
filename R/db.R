@@ -37,6 +37,7 @@
       label           TEXT,
       tags            TEXT,
       visibility      TEXT NOT NULL DEFAULT 'private',
+      access_token_hash TEXT,
       spec_json       TEXT NOT NULL,
       spec_hash       TEXT
     )")

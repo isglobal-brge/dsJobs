@@ -63,9 +63,10 @@
   saveRDS(value, out_path)
   size <- file.info(out_path)$size
 
-  # Emit outputs are safe for client (they contain what the spec declared)
+  # Emit outputs stay server-side -- NOT safe for client disclosure.
+  # Use jobLoadOutputDS (assign) to load them into the server R session.
   .db_register_output(db, job_id, step_index, output_name,
-    "emit_value", out_path, size_bytes = size, safe_for_client = TRUE)
+    "emit_value", out_path, size_bytes = size, safe_for_client = FALSE)
 
   list(type = "emit", name = output_name, path = out_path)
 }

@@ -1,10 +1,14 @@
 # Module: Step Execution
-# Called by worker daemon only. Never by DS methods.
+# Called by worker daemon or inline for session-only jobs.
 
 .BLOCKED_ENV_VARS <- c("PATH", "HOME", "USER", "SHELL",
   "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH",
   "DYLD_INSERT_LIBRARIES", "PYTHONPATH", "PYTHONSTARTUP",
   "BASH_ENV", "ENV", "CDPATH", "IFS")
+
+# Output kinds that are safe to return to the client via jobResultDS.
+# Everything else stays server-side (loadable via jobLoadOutputDS).
+.CLIENT_SAFE_KINDS <- c("summary", "aggregate_result", "job_metadata")
 
 #' Execute the current step of a job
 #' @keywords internal
@@ -32,7 +36,6 @@
   total <- as.integer(job$total_steps)
 
   if (current >= total) {
-    # All done -- build safe result
     .build_job_result(db, job_id)
     .store_update_job(db, job_id, state = "FINISHED", worker_pid = NA_integer_,
       finished_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"))
@@ -63,9 +66,11 @@
 
 #' Build the final result object for a completed job
 #'
-#' Collects outputs from the outputs table and writes result.rds.
-#' Separates client-safe outputs (returned via aggregate) from
-#' server-only outputs (loadable via assign).
+#' DISCLOSURE RULE: Only outputs of kind "summary", "aggregate_result",
+#' or "job_metadata" can have their values returned to the client via
+#' jobResultDS(). All other outputs (emit_value, artifact_file, etc.)
+#' are listed by name/kind only -- their values stay server-side and
+#' must be loaded via jobLoadOutputDS() (assign) or published as assets.
 #'
 #' @keywords internal
 .build_job_result <- function(db, job_id) {
@@ -75,19 +80,22 @@
 
   trust <- .dsjobs_trust_profile()
 
-  # Client-safe outputs (returned via jobResultDS aggregate)
+  safe_result <- list(
+    job_id = job_id,
+    profile = trust$name,
+    ready = TRUE
+  )
+
+  # Only summary/aggregate_result outputs cross the wire with values
   safe_outputs <- DBI::dbGetQuery(db,
     "SELECT name, kind, path_or_ref, size_bytes FROM outputs
-     WHERE job_id = ? AND safe_for_client = 1",
+     WHERE job_id = ? AND kind IN ('summary', 'aggregate_result', 'job_metadata')",
     params = list(job_id))
 
-  safe_result <- list(job_id = job_id, profile = trust$name)
-
   if (nrow(safe_outputs) > 0) {
-    safe_result$outputs <- lapply(seq_len(nrow(safe_outputs)), function(i) {
+    safe_result$summaries <- lapply(seq_len(nrow(safe_outputs)), function(i) {
       row <- safe_outputs[i, ]
       out <- list(name = row$name, kind = row$kind)
-      # Load RDS value if it's a small safe output
       if (!is.na(row$path_or_ref) && file.exists(row$path_or_ref) &&
           grepl("\\.rds$", row$path_or_ref)) {
         out$value <- readRDS(row$path_or_ref)
@@ -96,18 +104,17 @@
     })
   }
 
-  # All outputs (for server-side loading via jobLoadOutputDS assign)
+  # ALL outputs listed by name/kind only (no values) -- for discoverability
   all_outputs <- DBI::dbGetQuery(db,
-    "SELECT name, kind, path_or_ref FROM outputs WHERE job_id = ?",
+    "SELECT name, kind, size_bytes FROM outputs WHERE job_id = ?",
     params = list(job_id))
 
   safe_result$available_outputs <- if (nrow(all_outputs) > 0) {
     lapply(seq_len(nrow(all_outputs)), function(i) {
-      list(name = all_outputs$name[i], kind = all_outputs$kind[i])
+      list(name = all_outputs$name[i], kind = all_outputs$kind[i],
+           size_bytes = all_outputs$size_bytes[i])
     })
   } else list()
-
-  safe_result$ready <- TRUE
 
   saveRDS(safe_result, file.path(result_dir, "result.rds"))
   safe_result
@@ -127,10 +134,8 @@
 
 #' @keywords internal
 .resolve_step_input <- function(db, job_id, step_index, step_spec) {
-  # Explicit input ref
   if (!is.null(step_spec$inputs)) {
     refs <- step_spec$inputs
-    # Take first ref for now (future: multiple inputs)
     if (is.list(refs) && length(refs) > 0) {
       ref <- refs[[1]]
       if (is.numeric(ref)) {
@@ -142,7 +147,6 @@
       }
     }
   }
-  # Default: previous step output
   if (step_index > 1L) {
     row <- DBI::dbGetQuery(db,
       "SELECT output_ref FROM steps WHERE job_id = ? AND step_index = ?",

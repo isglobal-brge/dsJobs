@@ -47,7 +47,12 @@ jobSubmitDS <- function(spec_encoded) {
   }
 
   .check_quotas(db, owner_id)
-  .store_create_job(db, job_id, owner_id, spec, length(spec$steps))
+
+  # Generate access token (returned to client, stored as hash)
+  access_token <- .generate_access_token()
+  token_hash <- .hash_token(access_token)
+  .store_create_job(db, job_id, owner_id, spec, length(spec$steps),
+                     access_token_hash = token_hash)
 
   # If all steps are session-plane, execute inline (synchronous).
   # Artifact-plane steps are deferred to the worker daemon.
@@ -73,7 +78,8 @@ jobSubmitDS <- function(spec_encoded) {
   }
 
   job <- .store_get_job(db, job_id)
-  list(job_id = job_id, state = job$state %||% "PENDING",
+  list(job_id = job_id, access_token = access_token,
+       state = job$state %||% "PENDING",
        submitted_at = job$submitted_at %||% format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"))
 }
 

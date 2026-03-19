@@ -19,9 +19,11 @@ Depends:
 Imports:
     DBI,
     RSQLite,
+    digest,
     jsonlite,
     processx,
-    utils
+    utils,
+    uuid
 Suggests:
     yaml,
     dsFlower,

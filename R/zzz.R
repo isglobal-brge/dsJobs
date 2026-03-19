@@ -83,11 +83,22 @@
   x
 }
 
-#' Generate unique job ID
+#' Generate unique job ID (UUIDv4, 122 bits entropy)
 #' @keywords internal
 .generate_job_id <- function() {
-  hex <- paste(sample(c(0:9, letters[1:6]), 12, replace = TRUE), collapse = "")
-  paste0("job_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", Sys.getpid(), "_", hex)
+  paste0("job_", uuid::UUIDgenerate())
+}
+
+#' Generate a high-entropy access token (256 bits hex)
+#' @keywords internal
+.generate_access_token <- function() {
+  paste(sample(c(0:9, letters[1:6]), 64, replace = TRUE), collapse = "")
+}
+
+#' Hash an access token for storage (SHA-256)
+#' @keywords internal
+.hash_token <- function(token) {
+  digest::digest(token, algo = "sha256", serialize = FALSE)
 }
 
 #' Check if PID is alive
