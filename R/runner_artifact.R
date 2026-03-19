@@ -16,20 +16,28 @@
   args <- .build_runner_args(runner_config, step, step_dir, input_dir)
   output_dir <- file.path(step_dir, "output")
 
+  # processx expects named character vector: c(VAR = "value", ...)
+  # "current" inherits the parent environment
   env_vars <- c(
-    paste0("DSJOBS_STEP_DIR=", step_dir),
-    paste0("DSJOBS_OUTPUT_DIR=", output_dir),
-    paste0("DSJOBS_JOB_ID=", job_id),
-    paste0("DSJOBS_STEP_INDEX=", step_index))
+    "current",
+    DSJOBS_STEP_DIR = step_dir,
+    DSJOBS_OUTPUT_DIR = output_dir,
+    DSJOBS_JOB_ID = job_id,
+    DSJOBS_STEP_INDEX = as.character(step_index))
   if (!is.null(input_dir))
-    env_vars <- c(env_vars, paste0("DSJOBS_INPUT_DIR=", input_dir))
+    env_vars <- c(env_vars, DSJOBS_INPUT_DIR = input_dir)
   if (!is.null(step$config)) {
     for (nm in names(step$config)) {
+      val <- step$config[[nm]]
+      if (is.null(val) || is.list(val)) next
       upper <- toupper(nm)
       if (upper %in% .BLOCKED_ENV_VARS)
         stop("Config key '", nm, "' is blocked for security.", call. = FALSE)
-      env_vars <- c(env_vars, paste0("DSJOBS_CFG_", upper, "=",
-                                      as.character(step$config[[nm]])))
+      val_str <- if (length(val) > 1) paste(val, collapse = ",")
+                 else as.character(val)
+      new_var <- val_str
+      names(new_var) <- paste0("DSJOBS_CFG_", upper)
+      env_vars <- c(env_vars, new_var)
     }
   }
 
@@ -46,10 +54,19 @@
 
 #' @keywords internal
 .resolve_python_env <- function(runner_config) {
+  # If runner specifies an explicit python path, use it
+  if (!is.null(runner_config$python)) {
+    if (file.exists(runner_config$python))
+      return(list(python = runner_config$python))
+  }
+
+  # Try dsFlower venvs for Flower-related frameworks
   fw <- runner_config$framework
   if (!is.null(fw) && requireNamespace("dsFlower", quietly = TRUE))
     tryCatch({ e <- dsFlower:::.ensure_python_env(fw); return(list(python = e$python)) },
              error = function(e) NULL)
+
+  # System python fallback
   py <- Sys.which("python3")
   if (!nzchar(py)) py <- Sys.which("python")
   if (!nzchar(py)) py <- "python3"
