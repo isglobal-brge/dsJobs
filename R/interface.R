@@ -180,7 +180,23 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name, access_token = NULL) 
   if (is.na(path) || !file.exists(path))
     stop("Output file not found on disk.", call. = FALSE)
 
-  if (grepl("\\.rds$", path, ignore.case = TRUE)) return(readRDS(path))
+  # Load the file as an R object based on extension
+  if (grepl("\\.rds$", path, ignore.case = TRUE))
+    return(readRDS(path))
+
+  if (grepl("\\.csv$", path, ignore.case = TRUE))
+    return(utils::read.csv(path, stringsAsFactors = FALSE))
+
+  if (grepl("\\.parquet$", path, ignore.case = TRUE)) {
+    if (requireNamespace("arrow", quietly = TRUE))
+      return(as.data.frame(arrow::read_parquet(path)))
+    stop("arrow package required for Parquet files.", call. = FALSE)
+  }
+
+  if (grepl("\\.json$", path, ignore.case = TRUE))
+    return(jsonlite::fromJSON(readLines(path, warn = FALSE), simplifyVector = TRUE))
+
+  # Unknown format -- return reference
   list(type = "job_output_ref", job_id = job_id, output_name = output_name,
        kind = out$kind[1], path = path)
 }

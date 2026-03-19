@@ -288,15 +288,30 @@
 
 #' @keywords internal
 .read_exit_code <- function(step_dir) {
+  # 1. Explicit exit code file (written by well-behaved runners)
   ef <- file.path(step_dir, "exit_code")
   if (file.exists(ef)) {
     code <- tryCatch(as.integer(readLines(ef, n = 1, warn = FALSE)),
                       error = function(e) NA_integer_)
     if (!is.na(code)) return(code)
   }
+
+  # 2. Check if output directory has files (success indicator)
+  output_dir <- file.path(step_dir, "output")
+  if (dir.exists(output_dir) && length(list.files(output_dir)) > 0)
+    return(0L)  # Has output files = success
+
+  # 3. Check stderr for real errors (not just warnings)
   stderr_path <- file.path(step_dir, "stderr.log")
-  if (file.exists(stderr_path) && file.info(stderr_path)$size > 0) return(1L)
-  0L
+  if (file.exists(stderr_path)) {
+    stderr_lines <- readLines(stderr_path, warn = FALSE)
+    # Only count as error if stderr contains ERROR/Traceback/Exception
+    has_error <- any(grepl("ERROR|Traceback|Exception|FATAL|panic",
+                            stderr_lines, ignore.case = FALSE))
+    if (has_error) return(1L)
+  }
+
+  0L  # No evidence of failure
 }
 
 #' @keywords internal

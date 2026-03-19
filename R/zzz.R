@@ -102,9 +102,32 @@
 }
 
 #' Check if PID is alive
+#'
+#' Uses /proc filesystem (Linux) as primary check, falls back to
+#' kill(pid, 0) signal. The /proc check is more reliable in containers
+#' where tools::pskill can return success for zombie/dead PIDs.
+#'
 #' @keywords internal
 .pid_is_alive <- function(pid) {
   if (is.null(pid) || is.na(pid)) return(FALSE)
+  pid <- as.integer(pid)
+
+  # Primary: check /proc/<pid>/status (Linux containers)
+  proc_path <- paste0("/proc/", pid, "/status")
+  if (file.exists(proc_path)) {
+    # Process exists -- but check if zombie
+    status_lines <- tryCatch(readLines(proc_path, warn = FALSE),
+                              error = function(e) character(0))
+    state_line <- grep("^State:", status_lines, value = TRUE)
+    if (length(state_line) > 0 && grepl("Z \\(zombie\\)", state_line[1]))
+      return(FALSE)
+    return(TRUE)
+  }
+
+  # /proc not available or PID not there -- process is dead
+  if (dir.exists("/proc")) return(FALSE)
+
+  # Non-Linux fallback: use kill signal 0
   tryCatch({ tools::pskill(pid, signal = 0L); TRUE },
            error = function(e) FALSE)
 }
