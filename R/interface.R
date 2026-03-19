@@ -38,7 +38,7 @@
 jobSubmitDS <- function(spec_encoded) {
   spec <- .ds_arg(spec_encoded)
   spec <- .validate_job_spec(spec)
-  owner_id <- .get_owner_id()
+  owner_id <- .get_owner_id(spec$.owner)
   job_id <- .generate_job_id()
 
   db <- .db_connect()

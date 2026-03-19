@@ -52,20 +52,23 @@
   x
 }
 
-#' Get owner identity from Opal filesystem context or session
+#' Get owner identity
+#'
+#' In Opal/Rock, the DataSHIELD session user identity is NOT available
+#' in the R process environment (Rock authenticates with its own internal
+#' user, not the Opal user). Therefore, the client must pass the owner_id
+#' as part of the job spec (.owner field). This function provides fallbacks
+#' for DSLite and local testing.
+#'
+#' @param spec_owner Character or NULL; owner from the job spec (.owner field).
 #' @keywords internal
-.get_owner_id <- function() {
-  # Best: derived from Opal user home path if available
-  opal_home <- Sys.getenv("OPAL_HOME", unset = "")
-  if (nzchar(opal_home)) return(basename(opal_home))
-  # Rock session user
-
-  owner <- Sys.getenv("ROCK_USER", unset = "")
+.get_owner_id <- function(spec_owner = NULL) {
+  # Best: explicit owner from client (injected by dsJobsClient)
+  if (!is.null(spec_owner) && nzchar(spec_owner)) return(spec_owner)
+  # DSLite / local fallback
+  owner <- Sys.getenv("USER", unset = "")
   if (nzchar(owner)) return(owner)
-  owner <- Sys.getenv("OPAL_USER", unset = "")
-  if (nzchar(owner)) return(owner)
-  # Local fallback
-  Sys.getenv("USER", unset = "anonymous")
+  "anonymous"
 }
 
 #' Validate path-safe identifier
