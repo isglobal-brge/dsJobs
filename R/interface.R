@@ -340,6 +340,88 @@ jobCapabilitiesDS <- function() {
        max_jobs_per_user = settings$max_jobs_per_user,
        max_jobs_global = settings$max_jobs_global,
        max_steps_per_job = settings$max_steps_per_job,
-       privacy_profile = trust$name, worker = worker_health)
+       privacy_profile = trust$name, worker = worker_health,
+       admin_enabled = .admin_is_configured())
+}
+
+# =============================================================================
+# Admin methods (disabled by default, enabled by dsjobs.admin_key option)
+# =============================================================================
+
+#' Verify admin key. Disabled if no key configured.
+#' Key arrives B64-encoded from client to avoid Opal parser issues.
+#' @keywords internal
+.verify_admin_key <- function(admin_key) {
+  expected <- .dsj_option("admin_key", NULL)
+
+  if (is.null(expected) || !nzchar(expected))
+    stop("Admin access is not enabled on this server.", call. = FALSE)
+
+  # Decode B64 transport
+  decoded <- .ds_arg(admin_key)
+  if (is.list(decoded)) decoded <- decoded$.admin_key
+
+  if (is.null(decoded) || !nzchar(decoded))
+    stop("Access denied: admin_key required.", call. = FALSE)
+
+  if (!identical(decoded, expected))
+    stop("Access denied: invalid admin_key.", call. = FALSE)
+
+  invisible(TRUE)
+}
+
+#' Check if admin is configured
+#' @keywords internal
+.admin_is_configured <- function() {
+  key <- .dsj_option("admin_key", NULL)
+  !is.null(key) && nzchar(key)
+}
+
+#' List ALL Jobs (admin only)
+#'
+#' Disabled by default. Enable by setting dsjobs.admin_key on the server:
+#'   dsadmin.set_option(con, "dsjobs.admin_key", "your_secret_key")
+#'
+#' @param admin_key Character; the admin key.
+#' @param label Character or NULL; filter by label.
+#' @export
+jobAdminListDS <- function(admin_key = NULL, label = NULL) {
+  .verify_admin_key(admin_key)
+  db <- .db_connect()
+  on.exit(.db_close(db))
+  jobs <- .store_list_jobs(db, label = label)
+  if (nrow(jobs) == 0)
+    return(data.frame(job_id = character(0), state = character(0),
+      label = character(0), visibility = character(0),
+      owner_id = character(0), submitted_at = character(0),
+      progress = character(0), stringsAsFactors = FALSE))
+  jobs$progress <- paste0(jobs$step_index, "/", jobs$total_steps)
+  jobs[, c("job_id", "state", "label", "visibility", "owner_id",
+           "submitted_at", "progress"), drop = FALSE]
+}
+
+#' Cancel Any Job (admin only)
+#'
+#' Disabled by default. Enable by setting dsjobs.admin_key.
+#'
+#' @param job_id Character; job ID.
+#' @param admin_key Character; the admin key.
+#' @export
+jobAdminCancelDS <- function(job_id, admin_key = NULL) {
+  .verify_admin_key(admin_key)
+  job_id <- .resolve_job_id(job_id)
+  db <- .db_connect()
+  on.exit(.db_close(db))
+
+  job <- .store_get_job(db, job_id)
+  if (is.null(job)) stop("Job not found.", call. = FALSE)
+  if (job$state %in% c("FINISHED", "PUBLISHED", "FAILED", "CANCELLED"))
+    stop("Job already in terminal state: ", job$state, call. = FALSE)
+
+  .executor_kill(db, job_id)
+  .store_update_job(db, job_id, state = "CANCELLED", worker_pid = NA_integer_,
+    finished_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"))
+  .db_log_event(db, job_id, "admin_cancelled")
+  list(job_id = job_id, state = "CANCELLED")
 }
 

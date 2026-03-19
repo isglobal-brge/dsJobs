@@ -1,14 +1,16 @@
 AssignMethods:
   jobSubmitDS,
   jobCancelDS,
-  jobLoadOutputDS
+  jobLoadOutputDS,
+  jobAdminCancelDS
 AggregateMethods:
   jobStatusDS,
   jobResultDS,
   jobLogsDS,
   jobListDS,
   jobOutputsDS,
-  jobCapabilitiesDS
+  jobCapabilitiesDS,
+  jobAdminListDS
 Options:
   nfilter.subset=3,
   dsjobs.max_jobs_per_user=3,
