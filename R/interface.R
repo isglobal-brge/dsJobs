@@ -1,33 +1,55 @@
 # Module: DataSHIELD Exposed Methods
-# All DataSHIELD assign/aggregate methods for the durable job runtime.
+# All methods open/close their own DB connection.
+# No method triggers the scheduler -- the worker daemon handles dispatch.
+
+#' Resolve a job_id from either a raw string or a handle symbol
+#' @keywords internal
+.resolve_job_id <- function(x) {
+  # Direct job_id string
+  if (is.character(x) && length(x) == 1 && startsWith(x, "job_")) return(x)
+
+  # Try to look up as handle symbol in calling environments
+  if (is.character(x) && length(x) == 1) {
+    for (depth in 1:3) {
+      env <- tryCatch(sys.frame(-(depth)), error = function(e) NULL)
+      if (!is.null(env) && exists(x, envir = env, inherits = FALSE)) {
+        obj <- get(x, envir = env, inherits = FALSE)
+        if (is.list(obj) && !is.null(obj$job_id)) return(obj$job_id)
+      }
+    }
+    if (exists(x, envir = .GlobalEnv, inherits = FALSE)) {
+      obj <- get(x, envir = .GlobalEnv, inherits = FALSE)
+      if (is.list(obj) && !is.null(obj$job_id)) return(obj$job_id)
+    }
+  }
+  x
+}
 
 # --- ASSIGN methods ---
 
 #' Submit a Job
 #'
-#' DataSHIELD ASSIGN method. Validates the job spec, checks quotas,
-#' creates the job in the durable store, and triggers the scheduler.
+#' DataSHIELD ASSIGN method.
 #'
 #' @param spec_encoded Character; B64/JSON-encoded job specification.
-#' @return A job handle (named list with job_id and status).
+#' @return Job handle (list with job_id).
 #' @export
 jobSubmitDS <- function(spec_encoded) {
   spec <- .ds_arg(spec_encoded)
-
-  # Validate
   spec <- .validate_job_spec(spec)
 
-  # Check quotas
-  .check_quotas(spec)
-
-  # Create job in store
+  owner_id <- .get_owner_id()
   job_id <- .generate_job_id()
-  .store_create_job(job_id, spec)
 
-  # Trigger scheduler (lazy dispatch)
-  .scheduler_dispatch()
+  db <- .db_connect()
+  on.exit(.db_close(db))
 
-  # Return handle
+  .check_quotas(db, owner_id)
+  .store_create_job(db, job_id, owner_id, spec, length(spec$steps))
+
+  # Ensure worker is running
+  tryCatch(.dsjobs_worker_start(), error = function(e) NULL)
+
   list(
     job_id = job_id,
     state = "PENDING",
@@ -37,95 +59,94 @@ jobSubmitDS <- function(spec_encoded) {
 
 #' Cancel a Job
 #'
-#' DataSHIELD ASSIGN method. Cancels a running or pending job.
+#' DataSHIELD ASSIGN method.
 #'
-#' @param job_id Character; the job ID to cancel.
-#' @return Updated job handle with CANCELLED state.
+#' @param job_id_or_symbol Character; job ID or handle symbol.
+#' @return Updated handle with CANCELLED state.
 #' @export
-jobCancelDS <- function(job_id) {
-  state <- .store_read_state(job_id)
-  if (is.null(state)) {
-    stop("Job not found: ", job_id, call. = FALSE)
-  }
+jobCancelDS <- function(job_id_or_symbol) {
+  job_id <- .resolve_job_id(job_id_or_symbol)
 
-  if (state$state %in% c("FINISHED", "PUBLISHED", "FAILED", "CANCELLED")) {
-    stop("Job '", job_id, "' is already in terminal state: ", state$state,
+  db <- .db_connect()
+  on.exit(.db_close(db))
+
+  .assert_owner(db, job_id)
+
+  job <- .store_get_job(db, job_id)
+  if (job$state %in% c("FINISHED", "PUBLISHED", "FAILED", "CANCELLED")) {
+    stop("Job '", job_id, "' is already in terminal state: ", job$state,
          call. = FALSE)
   }
 
-  # Kill any active worker
-  .executor_kill(job_id)
+  .executor_kill(db, job_id)
 
-  .store_update_state(job_id, list(
+  .store_update_job(db, job_id,
     state = "CANCELLED",
-    finished_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z")
-  ))
-  .audit_log(job_id, "cancelled", list())
+    worker_pid = NA_integer_,
+    finished_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"))
+  .db_log_event(db, job_id, "cancelled")
 
-  list(
-    job_id = job_id,
-    state = "CANCELLED"
-  )
+  list(job_id = job_id, state = "CANCELLED")
 }
 
 # --- AGGREGATE methods ---
 
 #' Get Job Status
 #'
-#' DataSHIELD AGGREGATE method. Returns the current status of a job.
-#' Also triggers the scheduler to reap finished workers and dispatch
-#' pending jobs (lazy scheduling).
+#' DataSHIELD AGGREGATE method.
 #'
-#' @param job_id Character; the job ID.
-#' @return Named list with job status information.
+#' @param job_id_or_symbol Character; job ID or handle symbol.
+#' @return Named list with job status.
 #' @export
-jobStatusDS <- function(job_id) {
-  # Trigger lazy scheduling
-  .scheduler_dispatch()
+jobStatusDS <- function(job_id_or_symbol) {
+  job_id <- .resolve_job_id(job_id_or_symbol)
 
-  state <- .store_read_state(job_id)
-  if (is.null(state)) {
-    stop("Job not found: ", job_id, call. = FALSE)
-  }
+  db <- .db_connect()
+  on.exit(.db_close(db))
+
+  .assert_owner(db, job_id)
+
+  job <- .store_get_job(db, job_id)
+  if (is.null(job)) stop("Job not found: ", job_id, call. = FALSE)
 
   list(
-    job_id = job_id,
-    state = state$state,
-    step_index = as.integer(state$step_index %||% 0L),
-    total_steps = as.integer(state$total_steps %||% 0L),
-    submitted_at = state$submitted_at,
-    started_at = state$started_at,
-    finished_at = state$finished_at,
-    error = state$error,
-    retries = as.integer(state$retries %||% 0L)
+    job_id = job$job_id,
+    state = job$state,
+    step_index = as.integer(job$step_index),
+    total_steps = as.integer(job$total_steps),
+    submitted_at = job$submitted_at,
+    started_at = job$started_at,
+    finished_at = job$finished_at,
+    error = job$error,
+    retries = as.integer(job$retries)
   )
 }
 
 #' Get Job Result
 #'
-#' DataSHIELD AGGREGATE method. Returns the disclosure-safe result
-#' of a completed job.
+#' DataSHIELD AGGREGATE method.
 #'
-#' @param job_id Character; the job ID.
-#' @return Named list with safe result, or error if not ready.
+#' @param job_id_or_symbol Character; job ID or handle symbol.
+#' @return Named list with safe result.
 #' @export
-jobResultDS <- function(job_id) {
-  state <- .store_read_state(job_id)
-  if (is.null(state)) {
-    stop("Job not found: ", job_id, call. = FALSE)
-  }
+jobResultDS <- function(job_id_or_symbol) {
+  job_id <- .resolve_job_id(job_id_or_symbol)
 
-  if (!state$state %in% c("FINISHED", "PUBLISHED")) {
-    return(list(
-      job_id = job_id,
-      state = state$state,
-      ready = FALSE,
-      error = state$error
-    ))
+  db <- .db_connect()
+  on.exit(.db_close(db))
+
+  .assert_owner(db, job_id)
+
+  job <- .store_get_job(db, job_id)
+  if (is.null(job)) stop("Job not found: ", job_id, call. = FALSE)
+
+  if (!job$state %in% c("FINISHED", "PUBLISHED")) {
+    return(list(job_id = job_id, state = job$state, ready = FALSE,
+                error = job$error))
   }
 
   home <- .dsjobs_home()
-  result_path <- file.path(home, "queue", job_id, "result", "result.rds")
+  result_path <- file.path(home, "artifacts", job_id, "result", "result.rds")
 
   if (file.exists(result_path)) {
     result <- readRDS(result_path)
@@ -133,47 +154,45 @@ jobResultDS <- function(job_id) {
     return(result)
   }
 
-  # Try to publish now if not yet done
-  spec <- .store_read_spec(job_id)
+  # Try to publish now
+  spec <- .store_get_spec(db, job_id)
   if (!is.null(spec)) {
     tryCatch({
-      result <- .publish_safe_result(job_id, spec)
+      result <- .publish_safe_result(job_id, spec, db)
       result$ready <- TRUE
       return(result)
     }, error = function(e) NULL)
   }
 
-  list(
-    job_id = job_id,
-    state = state$state,
-    ready = TRUE,
-    summary = list(status = "completed")
-  )
+  list(job_id = job_id, state = job$state, ready = TRUE,
+       summary = list(status = "completed"))
 }
 
 #' Get Job Logs
 #'
-#' DataSHIELD AGGREGATE method. Returns sanitized log output for a job.
+#' DataSHIELD AGGREGATE method.
 #'
-#' @param job_id Character; the job ID.
-#' @param last_n Integer; number of lines to return (max 200).
+#' @param job_id_or_symbol Character; job ID or handle symbol.
+#' @param last_n Integer; max lines (default 50).
 #' @return Character vector of sanitized log lines.
 #' @export
-jobLogsDS <- function(job_id, last_n = 50L) {
+jobLogsDS <- function(job_id_or_symbol, last_n = 50L) {
+  job_id <- .resolve_job_id(job_id_or_symbol)
   last_n <- as.integer(last_n %||% 50L)
 
-  state <- .store_read_state(job_id)
-  if (is.null(state)) {
-    stop("Job not found: ", job_id, call. = FALSE)
-  }
+  db <- .db_connect()
+  on.exit(.db_close(db))
+
+  .assert_owner(db, job_id)
 
   home <- .dsjobs_home()
   lines <- character(0)
 
-  # Collect logs from step directories
-  steps_dir <- file.path(home, "queue", job_id, "steps")
-  if (dir.exists(steps_dir)) {
-    step_dirs <- sort(list.dirs(steps_dir, full.names = TRUE, recursive = FALSE))
+  # Collect logs from artifact step directories
+  artifact_dir <- file.path(home, "artifacts", job_id)
+  if (dir.exists(artifact_dir)) {
+    step_dirs <- sort(list.dirs(artifact_dir, full.names = TRUE, recursive = FALSE))
+    step_dirs <- step_dirs[grepl("^step_", basename(step_dirs))]
 
     for (sd in step_dirs) {
       for (logfile in c("stdout.log", "stderr.log")) {
@@ -192,17 +211,19 @@ jobLogsDS <- function(job_id, last_n = 50L) {
   .sanitize_job_logs(lines, last_n)
 }
 
-#' List All Jobs
+#' List All Jobs (owned by current user)
 #'
-#' DataSHIELD AGGREGATE method. Returns a summary of all jobs.
+#' DataSHIELD AGGREGATE method.
 #'
 #' @return Data.frame with job_id, state, submitted_at, progress.
 #' @export
 jobListDS <- function() {
-  # Trigger lazy scheduling
-  .scheduler_dispatch()
+  owner_id <- .get_owner_id()
 
-  jobs <- .store_list_jobs()
+  db <- .db_connect()
+  on.exit(.db_close(db))
+
+  jobs <- .store_list_jobs(db, owner_id = owner_id)
   if (nrow(jobs) == 0) {
     return(data.frame(
       job_id = character(0), state = character(0),
@@ -217,8 +238,7 @@ jobListDS <- function() {
 
 #' Get Server Job Capabilities
 #'
-#' DataSHIELD AGGREGATE method. Returns available runners, quotas,
-#' and configuration limits.
+#' DataSHIELD AGGREGATE method.
 #'
 #' @return Named list of capabilities.
 #' @export
@@ -227,27 +247,36 @@ jobCapabilitiesDS <- function() {
   trust <- .dsjobs_trust_profile()
   runners <- .list_runners()
 
-  # Load runner details
   runner_details <- lapply(runners, function(r) {
     cfg <- .load_runner_config(r)
     if (is.null(cfg)) return(list(name = r))
-    list(
-      name = cfg$name %||% r,
-      plane = cfg$plane %||% "artifact",
-      resource_class = cfg$resource_class %||% "default",
-      timeout_secs = cfg$timeout_secs %||% settings$default_timeout_secs
-    )
+    list(name = cfg$name %||% r, plane = cfg$plane %||% "artifact",
+         resource_class = cfg$resource_class %||% "default",
+         timeout_secs = cfg$timeout_secs %||% settings$default_timeout_secs)
   })
   names(runner_details) <- runners
+
+  # Check worker status
+  home <- .dsjobs_home(must_exist = FALSE)
+  worker_running <- FALSE
+  if (!is.null(home)) {
+    pid_file <- file.path(home, "worker.pid")
+    if (file.exists(pid_file)) {
+      pid <- tryCatch(as.integer(readLines(pid_file, n = 1, warn = FALSE)),
+                       error = function(e) NA_integer_)
+      worker_running <- .pid_is_alive(pid)
+    }
+  }
 
   list(
     dsjobs_version = as.character(utils::packageVersion("dsJobs")),
     runners = runner_details,
-    max_concurrent_jobs = settings$max_concurrent_jobs,
+    max_jobs_per_user = settings$max_jobs_per_user,
+    max_jobs_global = settings$max_jobs_global,
     max_steps_per_job = settings$max_steps_per_job,
     default_timeout_secs = settings$default_timeout_secs,
     max_retries = settings$max_retries,
     privacy_profile = trust$name,
-    active_jobs = nrow(.store_list_jobs(states = c("PENDING", "RUNNING")))
+    worker_running = worker_running
   )
 }

@@ -1,142 +1,121 @@
-# Module: Step Dispatch
-# Starts, advances, and kills job step execution.
+# Module: Step Execution
+# Dispatches steps, manages advancement, kills workers.
+# Called by the worker daemon, NOT by DataSHIELD methods.
 
-#' Start executing a job
+#' Execute the current step of a job
 #'
-#' Transitions from PENDING to RUNNING and executes the first step.
+#' Called by the worker inside a transaction.
 #'
-#' @param job_id Character; the job ID.
-#' @return Invisible TRUE.
+#' @param db DBI connection.
+#' @param job_id Character.
+#' @param step_index Integer (1-based).
+#' @param spec Named list; full job spec.
+#' @return Invisible NULL.
 #' @keywords internal
-.executor_start <- function(job_id) {
-  state <- .store_read_state(job_id)
-  spec <- .store_read_spec(job_id)
-
-  if (is.null(state) || is.null(spec)) {
-    stop("Job not found: ", job_id, call. = FALSE)
-  }
-
-  if (!state$state %in% c("PENDING", "RETRY")) {
-    return(invisible(FALSE))
-  }
-
-  step_index <- if (identical(state$state, "RETRY")) {
-    as.integer(state$step_index)
-  } else {
-    1L
-  }
-
-  .store_update_state(job_id, list(
-    state = "RUNNING",
-    step_index = step_index,
-    started_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z")
-  ))
-  .audit_log(job_id, "started", list(step_index = step_index))
-
+.executor_run_step <- function(db, job_id, step_index, spec) {
   step <- spec$steps[[step_index]]
-  .execute_step(job_id, step_index, step)
+  step_dir <- .ensure_step_dir(job_id, step_index)
 
-  invisible(TRUE)
-}
+  # Resolve input from previous step
+  input_dir <- .resolve_step_input(db, job_id, step_index, step)
 
-#' Advance to the next step or finish the job
-#'
-#' Called after a step completes successfully.
-#'
-#' @param job_id Character; the job ID.
-#' @param state Named list; current state.
-#' @param spec Named list; job spec.
-#' @return Invisible NULL.
-#' @keywords internal
-.executor_advance <- function(job_id, state, spec) {
-  current_step <- as.integer(state$step_index)
-  total_steps <- length(spec$steps)
-
-  if (current_step >= total_steps) {
-    # All steps complete
-    .store_update_state(job_id, list(
-      state = "FINISHED",
-      finished_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z")
-    ))
-    .audit_log(job_id, "finished", list(total_steps = total_steps))
-
-    # Auto-publish if spec has publish config
-    if (!is.null(spec$publish)) {
-      tryCatch({
-        .publish_safe_result(job_id, spec)
-        .store_update_state(job_id, list(state = "PUBLISHED"))
-        .audit_log(job_id, "published", list())
-      }, error = function(e) {
-        .audit_log(job_id, "publish_failed", list(error = conditionMessage(e)))
-      })
-    }
-
-    return(invisible(NULL))
-  }
-
-  # Advance to next step
-  next_step <- current_step + 1L
-  .store_update_state(job_id, list(step_index = next_step))
-
-  step <- spec$steps[[next_step]]
-  .execute_step(job_id, next_step, step)
-
-  invisible(NULL)
-}
-
-#' Execute a single step
-#'
-#' Dispatches to session or artifact runner based on step plane.
-#'
-#' @param job_id Character; the job ID.
-#' @param step_index Integer; the step index.
-#' @param step Named list; the step spec.
-#' @return Invisible NULL.
-#' @keywords internal
-.execute_step <- function(job_id, step_index, step) {
-  step_dir <- .store_step_dir(job_id, step_index)
-
-  # Write step status
-  status <- list(
-    step_index = step_index,
-    type = step$type,
-    plane = step$plane,
+  .store_update_step(db, job_id, step_index,
     state = "running",
-    started_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z")
-  )
-  jsonlite::write_json(status, file.path(step_dir, "status.json"),
-                        auto_unbox = TRUE, pretty = TRUE)
+    started_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"))
 
   if (identical(step$plane, "session")) {
-    .run_session_step(job_id, step_index, step, step_dir)
+    .run_session_step(db, job_id, step_index, step, step_dir, input_dir)
   } else {
-    .run_artifact_step(job_id, step_index, step, step_dir)
+    .run_artifact_step(db, job_id, step_index, step, step_dir, input_dir)
   }
-
-  invisible(NULL)
 }
 
-#' Kill a job's active worker
-#'
-#' @param job_id Character; the job ID.
-#' @return Invisible TRUE.
+#' Advance a job after a step completes successfully
 #' @keywords internal
-.executor_kill <- function(job_id) {
-  worker_key <- paste0("worker_", job_id)
-  proc <- tryCatch(
-    get(worker_key, envir = .dsjobs_env),
-    error = function(e) NULL
-  )
+.executor_advance <- function(db, job_id) {
+  job <- .store_get_job(db, job_id)
+  if (is.null(job)) return()
 
-  if (!is.null(proc) && inherits(proc, "process") && proc$is_alive()) {
-    proc$signal(15L)
-    proc$wait(timeout = 5000)
-    if (proc$is_alive()) proc$kill()
+  spec <- .store_get_spec(db, job_id)
+  current <- as.integer(job$step_index)
+  total <- as.integer(job$total_steps)
+
+  if (current >= total) {
+    # All steps done
+    .store_update_job(db, job_id,
+      state = "FINISHED",
+      worker_pid = NA_integer_,
+      finished_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"))
+    .db_log_event(db, job_id, "finished", list(total_steps = total))
+
+    # Auto-publish if configured
+    if (!is.null(spec$publish)) {
+      tryCatch({
+        .publish_safe_result(job_id, spec, db)
+        .store_update_job(db, job_id, state = "PUBLISHED")
+        .db_log_event(db, job_id, "published")
+      }, error = function(e) {
+        .db_log_event(db, job_id, "publish_failed", list(error = e$message))
+      })
+    }
+    return()
   }
 
-  if (exists(worker_key, envir = .dsjobs_env)) {
-    rm(list = worker_key, envir = .dsjobs_env)
-  }
+  # Start next step
+  next_idx <- current + 1L
+  .store_update_job(db, job_id, step_index = next_idx)
+  .executor_run_step(db, job_id, next_idx, spec)
+}
 
-  invisible(TRUE)
+#' Kill a job's active worker process
+#' @keywords internal
+.executor_kill <- function(db, job_id) {
+  job <- .store_get_job(db, job_id)
+  if (!is.null(job) && !is.na(job$worker_pid)) {
+    pid <- as.integer(job$worker_pid)
+    if (.pid_is_alive(pid)) {
+      tools::pskill(pid, signal = 15L)  # SIGTERM
+      Sys.sleep(2)
+      if (.pid_is_alive(pid)) {
+        tools::pskill(pid, signal = 9L)  # SIGKILL
+      }
+    }
+    .store_update_job(db, job_id, worker_pid = NA_integer_)
+  }
+}
+
+#' Ensure step artifact directory exists
+#' @keywords internal
+.ensure_step_dir <- function(job_id, step_index) {
+  home <- .dsjobs_home()
+  step_dir <- file.path(home, "artifacts", job_id,
+                         sprintf("step_%03d", step_index))
+  dir.create(file.path(step_dir, "output"), recursive = TRUE, showWarnings = FALSE)
+  Sys.chmod(step_dir, "0700")
+  step_dir
+}
+
+#' Resolve step input directory from previous step or explicit ref
+#' @keywords internal
+.resolve_step_input <- function(db, job_id, step_index, step_spec) {
+  # Explicit input_from in spec
+  if (!is.null(step_spec$input_from)) {
+    ref_step <- as.integer(step_spec$input_from)
+    row <- DBI::dbGetQuery(db,
+      "SELECT output_ref FROM steps WHERE job_id = ? AND step_index = ?",
+      params = list(job_id, ref_step))
+    if (nrow(row) > 0 && !is.na(row$output_ref[1])) {
+      return(file.path(.dsjobs_home(), row$output_ref[1]))
+    }
+  }
+  # Default: previous step's output
+  if (step_index > 1L) {
+    row <- DBI::dbGetQuery(db,
+      "SELECT output_ref FROM steps WHERE job_id = ? AND step_index = ?",
+      params = list(job_id, step_index - 1L))
+    if (nrow(row) > 0 && !is.na(row$output_ref[1])) {
+      return(file.path(.dsjobs_home(), row$output_ref[1]))
+    }
+  }
+  NULL
 }

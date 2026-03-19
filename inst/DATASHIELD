@@ -9,7 +9,8 @@ AggregateMethods:
   jobCapabilitiesDS
 Options:
   nfilter.subset=3,
-  dsjobs.max_concurrent_jobs=5,
+  dsjobs.max_jobs_per_user=3,
+  dsjobs.max_jobs_global=10,
   dsjobs.max_steps_per_job=20,
   dsjobs.default_timeout_secs=3600,
   dsjobs.max_retries=2,
