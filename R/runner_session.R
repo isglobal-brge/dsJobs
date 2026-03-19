@@ -74,19 +74,50 @@
 #' @keywords internal
 .session_safe_summary <- function(job_id, step_dir, input_dir, db, step_index) {
   trust <- .dsjobs_trust_profile()
+  nfilter <- as.integer(getOption("nfilter.subset",
+    getOption("default.nfilter.subset", 3)))
+
   summary <- list(job_id = job_id, profile = trust$name)
 
   if (!is.null(input_dir) && dir.exists(input_dir)) {
     files <- list.files(input_dir, full.names = TRUE)
     summary$n_output_files <- length(files)
     summary$output_size_bytes <- sum(file.info(files)$size, na.rm = TRUE)
+
+    # Check for CSV/Parquet outputs and count rows (nfilter check)
+    for (f in files) {
+      if (grepl("\\.csv$", f, ignore.case = TRUE)) {
+        n_rows <- length(readLines(f, warn = FALSE)) - 1L
+        if (n_rows < nfilter) {
+          stop("Disclosive: output has fewer than ", nfilter,
+               " rows. Operation blocked.", call. = FALSE)
+        }
+        summary$n_samples <- n_rows
+      } else if (grepl("\\.parquet$", f, ignore.case = TRUE)) {
+        if (requireNamespace("arrow", quietly = TRUE)) {
+          n_rows <- nrow(arrow::read_parquet(f, as_data_frame = FALSE))
+          if (n_rows < nfilter) {
+            stop("Disclosive: output has fewer than ", nfilter,
+                 " rows. Operation blocked.", call. = FALSE)
+          }
+          summary$n_samples <- n_rows
+        }
+      }
+    }
   }
 
-  # Bucket under non-research profiles
-  if (!identical(trust$name, "research") && !is.null(summary$n_output_files)) {
-    n <- as.integer(summary$n_output_files)
-    if (!is.na(n) && n >= 4)
-      summary$n_output_files <- as.integer(2^round(log2(n)))
+  # Bucket counts under non-research profiles
+  if (!identical(trust$name, "research")) {
+    if (!is.null(summary$n_output_files)) {
+      n <- as.integer(summary$n_output_files)
+      if (!is.na(n) && n >= 4)
+        summary$n_output_files <- as.integer(2^round(log2(n)))
+    }
+    if (!is.null(summary$n_samples)) {
+      n <- as.integer(summary$n_samples)
+      if (!is.na(n) && n >= 4)
+        summary$n_samples <- as.integer(2^round(log2(n)))
+    }
   }
 
   out_path <- file.path(step_dir, "output", "summary.rds")
