@@ -3,7 +3,7 @@
 
 #' @keywords internal
 .store_create_job <- function(db, job_id, owner_id, spec, total_steps,
-                               access_token_hash = NULL) {
+                               access_token_hash = NULL, spec_hash = NULL) {
   spec_json <- as.character(jsonlite::toJSON(spec, auto_unbox = TRUE, null = "null"))
   now <- format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC")
 
@@ -18,12 +18,13 @@
     DBI::dbExecute(db,
       "INSERT INTO jobs (job_id, owner_id, state, step_index, total_steps,
                          resource_class, label, tags, visibility,
-                         access_token_hash, submitted_at, spec_json)
-       VALUES (?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         access_token_hash, spec_hash, submitted_at, spec_json)
+       VALUES (?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       params = list(job_id, owner_id, total_steps,
                      spec$resource_class %||% "default",
                      label, tags, visibility,
                      access_token_hash %||% NA_character_,
+                     spec_hash %||% NA_character_,
                      now, spec_json))
     for (i in seq_along(spec$steps)) {
       s <- spec$steps[[i]]

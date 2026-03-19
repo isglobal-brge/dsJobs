@@ -82,8 +82,30 @@ jobSubmitDS <- function(spec_encoded) {
 
   # Client generates token, sends hash. Server stores hash only.
   token_hash <- spec$.access_token_hash
+
+  # Global job deduplication by spec_hash
+  if (identical(spec$visibility, "global")) {
+    spec_for_hash <- spec[setdiff(names(spec), c("job_id", ".owner", ".access_token_hash"))]
+    spec_hash <- digest::digest(jsonlite::toJSON(spec_for_hash, auto_unbox = TRUE),
+                                 algo = "sha256", serialize = FALSE)
+    existing_dup <- DBI::dbGetQuery(db,
+      "SELECT job_id, state FROM jobs
+       WHERE spec_hash = ? AND visibility = 'global'
+         AND state IN ('FINISHED', 'PUBLISHED')
+       LIMIT 1",
+      params = list(spec_hash))
+    if (nrow(existing_dup) > 0) {
+      return(list(job_id = existing_dup$job_id[1],
+                   state = existing_dup$state[1],
+                   deduplicated = TRUE,
+                   submitted_at = NA_character_))
+    }
+  } else {
+    spec_hash <- NULL
+  }
+
   .store_create_job(db, job_id, owner_id, spec, length(spec$steps),
-                     access_token_hash = token_hash)
+                     access_token_hash = token_hash, spec_hash = spec_hash)
 
   # If all steps are session-plane, execute inline (synchronous).
   # Artifact-plane steps are deferred to the worker daemon.
@@ -311,21 +333,75 @@ jobCapabilitiesDS <- function() {
   })
   names(runner_details) <- runners
 
-  home <- .dsjobs_home(must_exist = FALSE)
-  worker_running <- FALSE
-  if (!is.null(home)) {
-    pf <- file.path(home, "worker.pid")
-    if (file.exists(pf)) {
-      pid <- tryCatch(as.integer(readLines(pf, n = 1, warn = FALSE)),
-                       error = function(e) NA_integer_)
-      worker_running <- .pid_is_alive(pid)
-    }
-  }
+  worker_health <- .dsjobs_worker_health()
 
   list(dsjobs_version = as.character(utils::packageVersion("dsJobs")),
        runners = runner_details, publishers = .list_publishers(),
        max_jobs_per_user = settings$max_jobs_per_user,
        max_jobs_global = settings$max_jobs_global,
        max_steps_per_job = settings$max_steps_per_job,
-       privacy_profile = trust$name, worker_running = worker_running)
+       privacy_profile = trust$name, worker = worker_health)
+}
+
+# =============================================================================
+# Admin methods
+# =============================================================================
+
+#' List ALL Jobs (admin only)
+#'
+#' DataSHIELD AGGREGATE method. Shows all jobs regardless of owner.
+#' Requires admin credentials (verified via admin_key option).
+#'
+#' @param admin_key Character; admin verification key.
+#' @param label Character or NULL; filter by label.
+#' @export
+jobAdminListDS <- function(admin_key = NULL, label = NULL) {
+  .verify_admin_key(admin_key)
+  db <- .db_connect()
+  on.exit(.db_close(db))
+  jobs <- .store_list_jobs(db, label = label)
+  if (nrow(jobs) == 0)
+    return(data.frame(job_id = character(0), state = character(0),
+      label = character(0), visibility = character(0),
+      owner_id = character(0), submitted_at = character(0),
+      progress = character(0), stringsAsFactors = FALSE))
+  jobs$progress <- paste0(jobs$step_index, "/", jobs$total_steps)
+  jobs[, c("job_id", "state", "label", "visibility", "owner_id",
+           "submitted_at", "progress"), drop = FALSE]
+}
+
+#' Cancel Any Job (admin only)
+#'
+#' DataSHIELD ASSIGN method. Cancels any job regardless of owner.
+#'
+#' @param job_id Character; job ID.
+#' @param admin_key Character; admin verification key.
+#' @export
+jobAdminCancelDS <- function(job_id, admin_key = NULL) {
+  .verify_admin_key(admin_key)
+  job_id <- .resolve_job_id(job_id)
+  db <- .db_connect()
+  on.exit(.db_close(db))
+
+  job <- .store_get_job(db, job_id)
+  if (is.null(job)) stop("Job not found.", call. = FALSE)
+  if (job$state %in% c("FINISHED", "PUBLISHED", "FAILED", "CANCELLED"))
+    stop("Job already in terminal state: ", job$state, call. = FALSE)
+
+  .executor_kill(db, job_id)
+  .store_update_job(db, job_id, state = "CANCELLED", worker_pid = NA_integer_,
+    finished_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"))
+  .db_log_event(db, job_id, "admin_cancelled")
+  list(job_id = job_id, state = "CANCELLED")
+}
+
+#' Verify admin key
+#' @keywords internal
+.verify_admin_key <- function(admin_key) {
+  expected <- .dsj_option("admin_key", NULL)
+  if (is.null(expected))
+    stop("Admin access not configured. Set dsjobs.admin_key option.", call. = FALSE)
+  if (is.null(admin_key) || !identical(admin_key, expected))
+    stop("Access denied: invalid admin key.", call. = FALSE)
+  invisible(TRUE)
 }

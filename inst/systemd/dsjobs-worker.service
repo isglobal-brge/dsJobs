@@ -1,0 +1,27 @@
+[Unit]
+Description=dsJobs Worker Daemon
+After=network.target
+Documentation=https://github.com/isglobal-brge/dsFlower-framework
+
+[Service]
+Type=simple
+User=rock
+Group=rock
+ExecStart=/usr/bin/Rscript /usr/local/lib/R/site-library/dsJobs/worker/main.R /var/lib/dsjobs
+WorkingDirectory=/var/lib/dsjobs
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/lib/dsjobs/worker.log
+StandardError=append:/var/lib/dsjobs/worker.log
+
+# Resource limits
+LimitNOFILE=4096
+MemoryMax=2G
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dsjobs
+
+[Install]
+WantedBy=multi-user.target

@@ -48,6 +48,37 @@
   message("dsJobs worker stopped.")
 }
 
+#' Write worker health file (for monitoring)
+#' @keywords internal
+.worker_write_health <- function() {
+  home <- .dsjobs_home()
+  health <- list(
+    pid = Sys.getpid(),
+    alive = TRUE,
+    last_heartbeat = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"),
+    uptime_secs = as.numeric(difftime(Sys.time(),
+      .dsjobs_env$.worker_started_at %||% Sys.time(), units = "secs"))
+  )
+  health_path <- file.path(home, "worker.health")
+  writeLines(jsonlite::toJSON(health, auto_unbox = TRUE, pretty = TRUE), health_path)
+}
+
+#' Check worker health status
+#' @keywords internal
+.dsjobs_worker_health <- function() {
+  home <- .dsjobs_home(must_exist = FALSE)
+  if (is.null(home)) return(list(alive = FALSE, reason = "no DSJOBS_HOME"))
+  health_path <- file.path(home, "worker.health")
+  if (!file.exists(health_path)) return(list(alive = FALSE, reason = "no health file"))
+  tryCatch({
+    h <- jsonlite::fromJSON(readLines(health_path, warn = FALSE))
+    last <- as.POSIXct(h$last_heartbeat, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")
+    stale <- as.numeric(difftime(Sys.time(), last, units = "secs")) > 30
+    list(alive = !stale && .pid_is_alive(h$pid), pid = h$pid,
+         last_heartbeat = h$last_heartbeat, stale = stale)
+  }, error = function(e) list(alive = FALSE, reason = e$message))
+}
+
 #' Main worker loop (runs inside the worker process)
 #' @keywords internal
 .worker_main <- function() {
@@ -55,10 +86,12 @@
   on.exit(.db_close(db))
   settings <- .dsjobs_settings()
   gc_counter <- 0L
+  .dsjobs_env$.worker_started_at <- Sys.time()
   .worker_log("Worker started (PID ", Sys.getpid(), ")")
 
   repeat {
     tryCatch({
+      .worker_write_health()
       .worker_reap(db)
       .worker_dispatch(db)
       gc_counter <- gc_counter + 1L
