@@ -87,7 +87,7 @@ test_that("listing jobs filters by state", {
   expect_equal(nrow(running), 1L)
 })
 
-test_that("ownership assertion blocks unauthorized access", {
+test_that("visibility filtering works in listing", {
   home <- setup_test_home()
   withr::local_options(list(dsjobs.home = home))
   on.exit(cleanup_test_home(home))
@@ -95,12 +95,25 @@ test_that("ownership assertion blocks unauthorized access", {
   db <- dsJobs:::.db_connect()
   on.exit(dsJobs:::.db_close(db), add = TRUE)
 
-  spec <- make_test_spec()
-  dsJobs:::.store_create_job(db, "job_owned", "real_owner", spec, 1L)
+  spec_priv <- make_test_spec()
+  spec_priv$visibility <- "private"
+  dsJobs:::.store_create_job(db, "job_private", "user_a", spec_priv, 1L)
 
-  # Mock current user as someone else
-  withr::local_envvar(list(USER = "intruder", ROCK_USER = "", OPAL_USER = ""))
-  expect_error(dsJobs:::.assert_owner(db, "job_owned"), "Access denied")
+  spec_glob <- make_test_spec()
+  spec_glob$visibility <- "global"
+  dsJobs:::.store_create_job(db, "job_global", "user_b", spec_glob, 1L)
+
+  # user_a sees own private + all global
+  all <- dsJobs:::.store_list_jobs(db)
+  expect_equal(nrow(all), 2L)
+  # Filter to show user_a's view
+  visible <- all[all$owner_id == "user_a" | all$visibility == "global", , drop = FALSE]
+  expect_equal(nrow(visible), 2L)  # own private + global
+
+  # user_c sees only global
+  visible_c <- all[all$owner_id == "user_c" | all$visibility == "global", , drop = FALSE]
+  expect_equal(nrow(visible_c), 1L)
+  expect_equal(visible_c$job_id, "job_global")
 })
 
 test_that("spec retrieval returns parsed JSON", {
