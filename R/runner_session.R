@@ -95,8 +95,8 @@
     }
   }
 
-  # Bucket counts under non-research profiles
-  if (!identical(trust$name, "research")) {
+  # Bucket counts when exact counts are not allowed
+  if (!isTRUE(trust$allow_exact_num_examples)) {
     if (!is.null(summary$n_output_files)) {
       n <- as.integer(summary$n_output_files)
       if (!is.na(n) && n >= 4)
