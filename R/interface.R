@@ -182,8 +182,19 @@ jobCancelDS <- function(job_id_or_symbol, access_token = NULL) {
 }
 
 #' Load a Job Output into the Server Session
+#'
+#' When \code{as_descriptor = TRUE} and the output is a Parquet file,
+#' returns a \code{FlowerDatasetDescriptor} instead of loading the data
+#' into memory. This enables zero-copy column projection with dsFlower.
+#'
+#' @param job_id_or_symbol Character; job ID or symbol name
+#' @param output_name Character; name of the output to load
+#' @param access_token Character; access token for the job
+#' @param as_descriptor Logical; if TRUE and output is Parquet, return a
+#'   FlowerDatasetDescriptor instead of loading data into memory
 #' @export
-jobLoadOutputDS <- function(job_id_or_symbol, output_name, access_token = NULL) {
+jobLoadOutputDS <- function(job_id_or_symbol, output_name,
+                             access_token = NULL, as_descriptor = FALSE) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
@@ -205,25 +216,48 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name, access_token = NULL) 
   if (is.na(path) || !file.exists(path))
     stop("Output file not found on disk.", call. = FALSE)
 
-  # Load the file as an R object based on extension
-  if (grepl("\\.rds$", path, ignore.case = TRUE))
-    return(readRDS(path))
+  # Descriptor mode: return a FlowerDatasetDescriptor for Parquet outputs
+  if (isTRUE(as_descriptor) && grepl("\\.parquet$", path, ignore.case = TRUE)) {
+    if (!requireNamespace("arrow", quietly = TRUE)) {
+      stop("arrow package required for as_descriptor = TRUE.", call. = FALSE)
+    }
+    pf <- arrow::read_parquet(path, as_data_frame = FALSE)
+    col_names <- names(pf)
+    n_rows <- nrow(pf)
 
-  if (grepl("\\.csv$", path, ignore.case = TRUE))
-    return(utils::read.csv(path, stringsAsFactors = FALSE))
-
-  if (grepl("\\.parquet$", path, ignore.case = TRUE)) {
-    if (requireNamespace("arrow", quietly = TRUE))
-      return(as.data.frame(arrow::read_parquet(path)))
-    stop("arrow package required for Parquet files.", call. = FALSE)
+    desc <- list(
+      dataset_id  = paste0("dsjobs.", job_id, ".", output_name),
+      source_kind = "staged_parquet",
+      metadata    = list(
+        file    = path,
+        format  = "parquet",
+        n_rows  = n_rows,
+        columns = col_names
+      ),
+      staged_token = paste0("job_", job_id),
+      origin       = "dsJobs"
+    )
+    class(desc) <- "FlowerDatasetDescriptor"
+    return(desc)
   }
 
-  if (grepl("\\.json$", path, ignore.case = TRUE))
-    return(jsonlite::fromJSON(readLines(path, warn = FALSE), simplifyVector = TRUE))
+  # Load the file as an R object based on extension
+  obj <- if (grepl("\\.rds$", path, ignore.case = TRUE)) {
+    readRDS(path)
+  } else if (grepl("\\.csv$", path, ignore.case = TRUE)) {
+    utils::read.csv(path, stringsAsFactors = FALSE)
+  } else if (grepl("\\.parquet$", path, ignore.case = TRUE)) {
+    if (requireNamespace("arrow", quietly = TRUE))
+      as.data.frame(arrow::read_parquet(path))
+    else stop("arrow package required for Parquet files.", call. = FALSE)
+  } else if (grepl("\\.json$", path, ignore.case = TRUE)) {
+    jsonlite::fromJSON(readLines(path, warn = FALSE), simplifyVector = TRUE)
+  } else {
+    list(type = "job_output_ref", job_id = job_id, output_name = output_name,
+         kind = out$kind[1], path = path)
+  }
 
-  # Unknown format -- return reference
-  list(type = "job_output_ref", job_id = job_id, output_name = output_name,
-       kind = out$kind[1], path = path)
+  obj
 }
 
 # =============================================================================
