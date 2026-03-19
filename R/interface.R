@@ -95,10 +95,35 @@ jobSubmitDS <- function(spec_encoded) {
        LIMIT 1",
       params = list(spec_hash))
     if (nrow(existing_dup) > 0) {
-      return(list(job_id = existing_dup$job_id[1],
-                   state = existing_dup$state[1],
+      # Dedup: create a lightweight entry for the new job_id that
+      # mirrors the existing job's state. This way the client's
+      # job_id and access_token work normally.
+      existing_job <- .store_get_job(db, existing_dup$job_id[1])
+      .store_create_job(db, job_id, owner_id, spec, length(spec$steps),
+        access_token_hash = token_hash, spec_hash = spec_hash)
+      .store_update_job(db, job_id,
+        state = existing_job$state,
+        step_index = as.integer(existing_job$step_index),
+        started_at = existing_job$started_at,
+        finished_at = existing_job$finished_at)
+      .db_log_event(db, job_id, "deduplicated",
+        list(original_job_id = existing_dup$job_id[1]))
+
+      # Copy outputs from existing job
+      existing_outputs <- DBI::dbGetQuery(db,
+        "SELECT name, kind, path_or_ref, size_bytes, safe_for_client
+         FROM outputs WHERE job_id = ?",
+        params = list(existing_dup$job_id[1]))
+      for (i in seq_len(nrow(existing_outputs))) {
+        o <- existing_outputs[i, ]
+        .db_register_output(db, job_id, NA_integer_, o$name, o$kind,
+          o$path_or_ref, o$size_bytes, as.logical(o$safe_for_client))
+      }
+
+      job <- .store_get_job(db, job_id)
+      return(list(job_id = job_id, state = job$state,
                    deduplicated = TRUE,
-                   submitted_at = NA_character_))
+                   submitted_at = job$submitted_at))
     }
   } else {
     spec_hash <- NULL

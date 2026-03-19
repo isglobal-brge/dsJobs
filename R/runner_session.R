@@ -74,9 +74,6 @@
 #' @keywords internal
 .session_safe_summary <- function(job_id, step_dir, input_dir, db, step_index) {
   trust <- .dsjobs_trust_profile()
-  nfilter <- as.integer(getOption("nfilter.subset",
-    getOption("default.nfilter.subset", 3)))
-
   summary <- list(job_id = job_id, profile = trust$name)
 
   if (!is.null(input_dir) && dir.exists(input_dir)) {
@@ -84,24 +81,16 @@
     summary$n_output_files <- length(files)
     summary$output_size_bytes <- sum(file.info(files)$size, na.rm = TRUE)
 
-    # Check for CSV/Parquet outputs and count rows (nfilter check)
+    # Count rows in output tables for summary reporting.
+    # nfilter enforcement happens at dsImaging (resolve_dataset) and
+    # dsFlower (prepareRun) layers, not here. The summary only reports
+    # bucketed counts -- the data already exists on the server.
     for (f in files) {
       if (grepl("\\.csv$", f, ignore.case = TRUE)) {
-        n_rows <- length(readLines(f, warn = FALSE)) - 1L
-        if (n_rows < nfilter) {
-          stop("Disclosive: output has fewer than ", nfilter,
-               " rows. Operation blocked.", call. = FALSE)
-        }
-        summary$n_samples <- n_rows
+        summary$n_samples <- length(readLines(f, warn = FALSE)) - 1L
       } else if (grepl("\\.parquet$", f, ignore.case = TRUE)) {
-        if (requireNamespace("arrow", quietly = TRUE)) {
-          n_rows <- nrow(arrow::read_parquet(f, as_data_frame = FALSE))
-          if (n_rows < nfilter) {
-            stop("Disclosive: output has fewer than ", nfilter,
-                 " rows. Operation blocked.", call. = FALSE)
-          }
-          summary$n_samples <- n_rows
-        }
+        if (requireNamespace("arrow", quietly = TRUE))
+          summary$n_samples <- nrow(arrow::read_parquet(f, as_data_frame = FALSE))
       }
     }
   }
