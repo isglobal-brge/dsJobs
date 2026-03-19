@@ -333,6 +333,14 @@
     if (dir.exists(ad)) unlink(ad, recursive = TRUE)
   }
   if (nrow(expired) > 0) .worker_log("GC removed ", nrow(expired), " jobs")
+
+  # Also clean stale asset generations (dsImaging)
+  if (requireNamespace("dsImaging", quietly = TRUE)) {
+    tryCatch({
+      n_stale <- dsImaging::cleanup_stale_generations(max_age_hours = 2)
+      if (n_stale > 0) .worker_log("GC cleaned ", n_stale, " stale generations")
+    }, error = function(e) NULL)
+  }
 }
 
 #' @keywords internal
