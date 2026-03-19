@@ -1,0 +1,9 @@
+name: pyradiomics
+plane: artifact
+resource_class: cpu_heavy
+framework: pyradiomics
+command: python
+args_template: ["-m", "radiomics", "--input", "{input_dir}", "--output", "{output_dir}"]
+timeout_secs: 1800
+allowed_params: [settings, mask_asset]
+python_deps: ["pyradiomics>=3.0.0", "SimpleITK>=2.0.0"]

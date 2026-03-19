@@ -1,0 +1,16 @@
+AssignMethods:
+  jobSubmitDS,
+  jobCancelDS
+AggregateMethods:
+  jobStatusDS,
+  jobResultDS,
+  jobLogsDS,
+  jobListDS,
+  jobCapabilitiesDS
+Options:
+  nfilter.subset=3,
+  dsjobs.max_concurrent_jobs=5,
+  dsjobs.max_steps_per_job=20,
+  dsjobs.default_timeout_secs=3600,
+  dsjobs.max_retries=2,
+  dsjobs.job_expiry_hours=168

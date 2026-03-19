@@ -1,0 +1,9 @@
+name: image_preprocess
+plane: artifact
+resource_class: cpu_heavy
+framework: pytorch_vision
+command: python
+args_template: ["-m", "dsjobs_preprocess", "--input", "{input_dir}", "--output", "{output_dir}", "--operations", "{operations}"]
+timeout_secs: 3600
+allowed_params: [operations, resize, normalize, augment]
+python_deps: ["Pillow>=9.0.0", "torchvision>=0.15.0", "numpy>=1.21.0"]

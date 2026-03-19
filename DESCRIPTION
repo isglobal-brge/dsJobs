@@ -1,0 +1,43 @@
+Package: dsJobs
+Type: Package
+Title: DataSHIELD Durable Federated Job Runtime
+Version: 0.1.0
+Authors@R: c(
+    person("David", "Sarrat González", role = c("aut", "cre"), email = "david.sarrat@isglobal.org"),
+    person("Juan R", "González", role = "aut", email = "juanr.gonzalez@isglobal.org"))
+Description: Server-side DataSHIELD package for durable federated job execution.
+    Provides a two-plane execution model: session-plane steps (DataSHIELD
+    assign/aggregate/checkpoint) and artifact-plane steps (processx-isolated
+    subprocesses for radiomics, preprocessing, staging). Jobs persist on disk
+    via a filesystem-based queue under DSJOBS_HOME, survive session restarts,
+    and integrate with dsFlower for Python environments and dsImaging for
+    dataset resolution and asset publishing.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.1.0)
+Imports:
+    jsonlite,
+    processx,
+    utils
+Suggests:
+    yaml,
+    dsFlower,
+    dsImaging,
+    arrow,
+    testthat (>= 3.0.0),
+    withr,
+    DSLite
+AggregateMethods:
+    jobStatusDS,
+    jobResultDS,
+    jobLogsDS,
+    jobListDS,
+    jobCapabilitiesDS,
+    c=base::c,
+    list=base::list
+AssignMethods:
+    jobSubmitDS,
+    jobCancelDS
+Config/testthat/edition: 3
+RoxygenNote: 7.3.3

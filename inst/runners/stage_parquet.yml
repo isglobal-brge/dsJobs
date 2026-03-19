@@ -1,0 +1,9 @@
+name: stage_parquet
+plane: artifact
+resource_class: default
+framework: null
+command: python
+args_template: ["-c", "import pandas as pd; df = pd.read_csv('{input_dir}/data.csv'); df.to_parquet('{output_dir}/data.parquet')"]
+timeout_secs: 600
+allowed_params: [columns, format]
+python_deps: ["pandas>=1.3.0", "pyarrow>=10.0.0"]
