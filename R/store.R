@@ -104,7 +104,11 @@
   }
   sql <- paste(sql, "ORDER BY submitted_at DESC")
 
-  DBI::dbGetQuery(db, sql, params = params)
+  if (length(params) > 0) {
+    DBI::dbGetQuery(db, sql, params = params)
+  } else {
+    DBI::dbGetQuery(db, sql)
+  }
 }
 
 #' Assert the current user owns the job
