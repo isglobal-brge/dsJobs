@@ -1,20 +1,16 @@
 # Module: Trust Profiles and Disclosure Controls
-# Delegates to dsFlower if available, standalone fallback otherwise.
 
 #' @keywords internal
 .dsjobs_trust_profile <- function() {
-  if (requireNamespace("dsFlower", quietly = TRUE)) {
+  if (requireNamespace("dsFlower", quietly = TRUE))
     tryCatch(return(dsFlower:::.flowerTrustProfile()), error = function(e) NULL)
-  }
   profile_name <- .dsj_option("privacy_profile", "secure")
   profiles <- list(
     research = list(name = "research", min_train_rows = 3),
     secure = list(name = "secure", min_train_rows = 100),
-    secure_dp = list(name = "secure_dp", min_train_rows = 200)
-  )
-  if (!profile_name %in% names(profiles)) {
+    secure_dp = list(name = "secure_dp", min_train_rows = 200))
+  if (!profile_name %in% names(profiles))
     stop("Unknown privacy profile: '", profile_name, "'.", call. = FALSE)
-  }
   profiles[[profile_name]]
 }
 

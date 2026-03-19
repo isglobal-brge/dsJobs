@@ -1,11 +1,13 @@
 AssignMethods:
   jobSubmitDS,
-  jobCancelDS
+  jobCancelDS,
+  jobLoadOutputDS
 AggregateMethods:
   jobStatusDS,
   jobResultDS,
   jobLogsDS,
   jobListDS,
+  jobOutputsDS,
   jobCapabilitiesDS
 Options:
   nfilter.subset=3,

@@ -1,33 +1,22 @@
-# Module: Package Hooks + Environments
-# Package load/detach hooks, internal environments, owner resolution.
+# Module: Package Hooks + Core Utilities
+# No daemon start here. Worker is external (systemd/Docker).
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
-# Package-level environment for worker tracking
+# Package-level environment (plugin registries, cached connections)
 .dsjobs_env <- new.env(parent = emptyenv())
 
-#' @keywords internal
-.onAttach <- function(lib, pkg) {
-  packageStartupMessage("dsJobs v", utils::packageVersion("dsJobs"), " loaded.")
-}
+# Publisher plugin registry
+.dsjobs_env$.publishers <- list()
 
 #' @keywords internal
-.onDetach <- function(lib) {
-  # Stop worker if tracked in this session
-  tryCatch({
-    proc <- .dsjobs_env$.worker
-    if (!is.null(proc) && inherits(proc, "process") && proc$is_alive()) {
-      proc$signal(15L)
-      proc$wait(timeout = 5000)
-      if (proc$is_alive()) proc$kill()
-    }
-  }, error = function(e) NULL)
-  rm(list = ls(.dsjobs_env), envir = .dsjobs_env)
+.onLoad <- function(libname, pkgname) {
+  # Validate config only. Never start daemons.
+  invisible(NULL)
 }
 
-#' Get DSJOBS_HOME path
-#' @param must_exist Logical; if TRUE, stop if missing.
-#' @return Character path.
+# --- Core utilities ---
+
 #' @keywords internal
 .dsjobs_home <- function(must_exist = TRUE) {
   home <- .dsj_option("home", "/var/lib/dsjobs")
@@ -37,14 +26,13 @@
   home
 }
 
-#' Read a dsJobs option with DataSHIELD double-fallback
 #' @keywords internal
 .dsj_option <- function(name, default = NULL) {
   getOption(paste0("dsjobs.", name),
     getOption(paste0("default.dsjobs.", name), default))
 }
 
-#' Deserialize a possibly-JSON argument (Opal transport)
+#' Deserialize B64/JSON argument from Opal transport
 #' @keywords internal
 .ds_arg <- function(x) {
   if (is.character(x) && length(x) == 1) {
@@ -64,50 +52,45 @@
   x
 }
 
-#' Get the owner identity for the current DataSHIELD session
-#' @return Character; owner identifier.
+#' Get owner identity from Opal filesystem context or session
 #' @keywords internal
 .get_owner_id <- function() {
-  # Rock exposes user via environment variable
+  # Best: derived from Opal user home path if available
+  opal_home <- Sys.getenv("OPAL_HOME", unset = "")
+  if (nzchar(opal_home)) return(basename(opal_home))
+  # Rock session user
 
   owner <- Sys.getenv("ROCK_USER", unset = "")
   if (nzchar(owner)) return(owner)
-  # Opal may set this
   owner <- Sys.getenv("OPAL_USER", unset = "")
   if (nzchar(owner)) return(owner)
-  # DSLite / local fallback
+  # Local fallback
   Sys.getenv("USER", unset = "anonymous")
 }
 
-#' Validate a path-safe identifier
+#' Validate path-safe identifier
 #' @keywords internal
 .validate_identifier <- function(x, field_name) {
-  if (!is.character(x) || length(x) != 1 || !nzchar(x)) {
+  if (!is.character(x) || length(x) != 1 || !nzchar(x))
     stop(field_name, " must be a non-empty string.", call. = FALSE)
-  }
-  if (grepl("\\.\\.", x)) {
+  if (grepl("\\.\\.", x))
     stop(field_name, " must not contain '..'.", call. = FALSE)
-  }
-  if (!grepl("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", x)) {
+  if (!grepl("^[a-zA-Z0-9][a-zA-Z0-9_.-]*$", x))
     stop(field_name, " contains invalid characters.", call. = FALSE)
-  }
   x
 }
 
-#' Generate a unique job ID
+#' Generate unique job ID
 #' @keywords internal
 .generate_job_id <- function() {
   hex <- paste(sample(c(0:9, letters[1:6]), 12, replace = TRUE), collapse = "")
   paste0("job_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", Sys.getpid(), "_", hex)
 }
 
-#' Check if a PID is alive
+#' Check if PID is alive
 #' @keywords internal
 .pid_is_alive <- function(pid) {
   if (is.null(pid) || is.na(pid)) return(FALSE)
-  tryCatch({
-    # Signal 0 checks existence without killing
-    tools::pskill(pid, signal = 0L)
-    TRUE
-  }, error = function(e) FALSE)
+  tryCatch({ tools::pskill(pid, signal = 0L); TRUE },
+           error = function(e) FALSE)
 }

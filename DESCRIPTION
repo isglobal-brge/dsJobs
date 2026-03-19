@@ -34,11 +34,13 @@ AggregateMethods:
     jobResultDS,
     jobLogsDS,
     jobListDS,
+    jobOutputsDS,
     jobCapabilitiesDS,
     c=base::c,
     list=base::list
 AssignMethods:
     jobSubmitDS,
-    jobCancelDS
+    jobCancelDS,
+    jobLoadOutputDS
 Config/testthat/edition: 3
 RoxygenNote: 7.3.3

@@ -10,12 +10,12 @@ test_that("spec with too many steps is rejected", {
 
 test_that("step without type is rejected", {
   spec <- list(steps = list(list(plane = "session")))
-  expect_error(dsJobs:::.validate_job_spec(spec), "missing required field 'type'")
+  expect_error(dsJobs:::.validate_job_spec(spec), "missing 'type'")
 })
 
 test_that("artifact step without runner is rejected", {
   spec <- list(steps = list(list(type = "run_artifact", plane = "artifact")))
-  expect_error(dsJobs:::.validate_job_spec(spec), "must specify a 'runner'")
+  expect_error(dsJobs:::.validate_job_spec(spec), "must specify 'runner'")
 })
 
 test_that("valid session step passes validation", {

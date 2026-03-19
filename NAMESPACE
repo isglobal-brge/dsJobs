@@ -2,8 +2,11 @@
 
 export(jobSubmitDS)
 export(jobCancelDS)
+export(jobLoadOutputDS)
 export(jobStatusDS)
 export(jobResultDS)
 export(jobLogsDS)
 export(jobListDS)
+export(jobOutputsDS)
 export(jobCapabilitiesDS)
+export(register_dsjobs_publisher)
