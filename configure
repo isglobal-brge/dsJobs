@@ -1,0 +1,83 @@
+#!/bin/sh
+# dsJobs post-install configuration script
+# Runs automatically during R CMD INSTALL on Unix systems.
+#
+# Creates the DSJOBS_HOME directory structure needed for:
+#   - SQLite database (job state, outputs, events)
+#   - Artifact storage (step outputs, model weights)
+#   - Runner configs (YAML files registered by other packages)
+#   - Published assets (disclosure-safe results)
+#
+# All paths are created under DSJOBS_HOME (default /var/lib/dsjobs).
+# The directory is owned by the user running Rock (typically 'rock').
+
+set -e
+
+DSJOBS_HOME="${DSJOBS_HOME:-/var/lib/dsjobs}"
+LOG_PREFIX="[dsJobs configure]"
+
+log_info() { echo "${LOG_PREFIX} $*"; }
+log_warn() { echo "${LOG_PREFIX} WARNING: $*" >&2; }
+
+# ---------------------------------------------------------------------------
+# Create directory structure
+# ---------------------------------------------------------------------------
+
+log_info "Setting up DSJOBS_HOME: ${DSJOBS_HOME}"
+
+if ! mkdir -p "${DSJOBS_HOME}" 2>/dev/null; then
+  log_warn "Cannot create ${DSJOBS_HOME}. Skipping setup."
+  log_warn "Create this directory manually with appropriate permissions."
+  exit 0
+fi
+
+# Subdirectories
+for dir in artifacts runners publish; do
+  mkdir -p "${DSJOBS_HOME}/${dir}" 2>/dev/null || true
+done
+
+# Set permissions (owner read/write/execute, group read/execute)
+chmod 750 "${DSJOBS_HOME}" 2>/dev/null || true
+chmod 750 "${DSJOBS_HOME}/artifacts" 2>/dev/null || true
+chmod 750 "${DSJOBS_HOME}/runners" 2>/dev/null || true
+chmod 750 "${DSJOBS_HOME}/publish" 2>/dev/null || true
+
+# Set ownership to rock user if it exists (Rock/DataSHIELD server)
+if id rock >/dev/null 2>&1; then
+  chown -R rock:rock "${DSJOBS_HOME}" 2>/dev/null || true
+  log_info "Ownership set to rock:rock"
+fi
+
+# ---------------------------------------------------------------------------
+# Initialize SQLite database (if not exists)
+# ---------------------------------------------------------------------------
+
+DB_PATH="${DSJOBS_HOME}/dsjobs.sqlite"
+if [ ! -f "${DB_PATH}" ]; then
+  log_info "Initializing SQLite database..."
+  R --no-save --no-restore -e "
+    db <- DBI::dbConnect(RSQLite::SQLite(), '${DB_PATH}')
+    DBI::dbExecute(db, 'PRAGMA journal_mode=WAL')
+    DBI::dbDisconnect(db)
+    cat('[dsJobs configure] Database created.\n')
+  " 2>&1 | grep -v "^>" || true
+  chmod 660 "${DB_PATH}" 2>/dev/null || true
+  if id rock >/dev/null 2>&1; then
+    chown rock:rock "${DB_PATH}" 2>/dev/null || true
+  fi
+else
+  log_info "Database already exists, skipping."
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+log_info "Setup complete."
+log_info "  Home:      ${DSJOBS_HOME}"
+log_info "  Database:  ${DB_PATH}"
+log_info "  Artifacts: ${DSJOBS_HOME}/artifacts/"
+log_info "  Runners:   ${DSJOBS_HOME}/runners/"
+log_info "  Publish:   ${DSJOBS_HOME}/publish/"
+
+exit 0

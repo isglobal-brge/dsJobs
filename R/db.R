@@ -32,12 +32,10 @@
       error_class     TEXT,
       error_message   TEXT,
       retry_count     INTEGER NOT NULL DEFAULT 0,
-      cancel_requested INTEGER NOT NULL DEFAULT 0,
       worker_pid      INTEGER,
       label           TEXT,
       tags            TEXT,
-      visibility      TEXT NOT NULL DEFAULT 'private',
-      access_token_hash TEXT,
+      visibility      TEXT NOT NULL DEFAULT 'global',
       spec_json       TEXT NOT NULL,
       spec_hash       TEXT
     )")

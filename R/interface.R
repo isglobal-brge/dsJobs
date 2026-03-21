@@ -1,8 +1,5 @@
 # Module: DataSHIELD Methods
 # DS methods are READ-ONLY helpers for the shared SQLite.
-# Access control is enforced by the Opal/Armadillo filesystem layer,
-# NOT by these methods (Rock doesn't know the Opal user).
-# Cancel uses the filesystem control plane (client writes cancel request).
 
 #' @keywords internal
 .resolve_job_id <- function(x) {
@@ -21,38 +18,6 @@
     }
   }
   x
-}
-
-#' Verify access token for a job
-#'
-#' For private jobs: token required. For global jobs: token not required
-#' for read operations (safe results). Write operations (cancel) always
-#' require token.
-#'
-#' @param db DBI connection.
-#' @param job Named list from .store_get_job().
-#' @param access_token Character; the plaintext token from client.
-#' @param require_for_global Logical; if TRUE, require token even for global jobs.
-#' @keywords internal
-.verify_token <- function(db, job, access_token, require_for_global = FALSE) {
-  is_global <- identical(job$visibility, "global")
-
-  # Global jobs: read access without token (safe results only)
-  if (is_global && !require_for_global) return(invisible(TRUE))
-
-  # Private jobs or write operations: token required
-  if (is.null(access_token) || !nzchar(access_token))
-    stop("Access denied: access_token required for this job.", call. = FALSE)
-
-  stored_hash <- job$access_token_hash
-  if (is.null(stored_hash) || is.na(stored_hash))
-    return(invisible(TRUE))  # Legacy jobs without token
-
-  provided_hash <- .hash_token(access_token)
-  if (!identical(provided_hash, stored_hash))
-    stop("Access denied: invalid access_token.", call. = FALSE)
-
-  invisible(TRUE)
 }
 
 # =============================================================================
@@ -80,57 +45,49 @@ jobSubmitDS <- function(spec_encoded) {
 
   .check_quotas(db, owner_id)
 
-  # Client generates token, sends hash. Server stores hash only.
-  token_hash <- spec$.access_token_hash
+  # Deduplication by spec_hash
+  spec_for_hash <- spec[setdiff(names(spec), c("job_id", ".owner"))]
+  spec_hash <- digest::digest(jsonlite::toJSON(spec_for_hash, auto_unbox = TRUE),
+                               algo = "sha256", serialize = FALSE)
+  existing_dup <- DBI::dbGetQuery(db,
+    "SELECT job_id, state FROM jobs
+     WHERE spec_hash = ?
+       AND state IN ('FINISHED', 'PUBLISHED')
+     LIMIT 1",
+    params = list(spec_hash))
+  if (nrow(existing_dup) > 0) {
+    # Dedup: create a lightweight entry for the new job_id that
+    # mirrors the existing job's state.
+    existing_job <- .store_get_job(db, existing_dup$job_id[1])
+    .store_create_job(db, job_id, owner_id, spec, length(spec$steps),
+      spec_hash = spec_hash)
+    .store_update_job(db, job_id,
+      state = existing_job$state,
+      step_index = as.integer(existing_job$step_index),
+      started_at = existing_job$started_at,
+      finished_at = existing_job$finished_at)
+    .db_log_event(db, job_id, "deduplicated",
+      list(original_job_id = existing_dup$job_id[1]))
 
-  # Global job deduplication by spec_hash
-  if (identical(spec$visibility, "global")) {
-    spec_for_hash <- spec[setdiff(names(spec), c("job_id", ".owner", ".access_token_hash"))]
-    spec_hash <- digest::digest(jsonlite::toJSON(spec_for_hash, auto_unbox = TRUE),
-                                 algo = "sha256", serialize = FALSE)
-    existing_dup <- DBI::dbGetQuery(db,
-      "SELECT job_id, state FROM jobs
-       WHERE spec_hash = ? AND visibility = 'global'
-         AND state IN ('FINISHED', 'PUBLISHED')
-       LIMIT 1",
-      params = list(spec_hash))
-    if (nrow(existing_dup) > 0) {
-      # Dedup: create a lightweight entry for the new job_id that
-      # mirrors the existing job's state. This way the client's
-      # job_id and access_token work normally.
-      existing_job <- .store_get_job(db, existing_dup$job_id[1])
-      .store_create_job(db, job_id, owner_id, spec, length(spec$steps),
-        access_token_hash = token_hash, spec_hash = spec_hash)
-      .store_update_job(db, job_id,
-        state = existing_job$state,
-        step_index = as.integer(existing_job$step_index),
-        started_at = existing_job$started_at,
-        finished_at = existing_job$finished_at)
-      .db_log_event(db, job_id, "deduplicated",
-        list(original_job_id = existing_dup$job_id[1]))
-
-      # Copy outputs from existing job
-      existing_outputs <- DBI::dbGetQuery(db,
-        "SELECT name, kind, path_or_ref, size_bytes, safe_for_client
-         FROM outputs WHERE job_id = ?",
-        params = list(existing_dup$job_id[1]))
-      for (i in seq_len(nrow(existing_outputs))) {
-        o <- existing_outputs[i, ]
-        .db_register_output(db, job_id, NA_integer_, o$name, o$kind,
-          o$path_or_ref, o$size_bytes, as.logical(o$safe_for_client))
-      }
-
-      job <- .store_get_job(db, job_id)
-      return(list(job_id = job_id, state = job$state,
-                   deduplicated = TRUE,
-                   submitted_at = job$submitted_at))
+    # Copy outputs from existing job
+    existing_outputs <- DBI::dbGetQuery(db,
+      "SELECT name, kind, path_or_ref, size_bytes, safe_for_client
+       FROM outputs WHERE job_id = ?",
+      params = list(existing_dup$job_id[1]))
+    for (i in seq_len(nrow(existing_outputs))) {
+      o <- existing_outputs[i, ]
+      .db_register_output(db, job_id, NA_integer_, o$name, o$kind,
+        o$path_or_ref, o$size_bytes, as.logical(o$safe_for_client))
     }
-  } else {
-    spec_hash <- NULL
+
+    job <- .store_get_job(db, job_id)
+    return(list(job_id = job_id, state = job$state,
+                 deduplicated = TRUE,
+                 submitted_at = job$submitted_at))
   }
 
   .store_create_job(db, job_id, owner_id, spec, length(spec$steps),
-                     access_token_hash = token_hash, spec_hash = spec_hash)
+                     spec_hash = spec_hash)
 
   # If all steps are session-plane, execute inline (synchronous).
   # Artifact-plane steps are deferred to the worker daemon.
@@ -161,26 +118,6 @@ jobSubmitDS <- function(spec_encoded) {
        submitted_at = job$submitted_at %||% format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"))
 }
 
-#' Cancel a Job
-#' @export
-jobCancelDS <- function(job_id_or_symbol, access_token = NULL) {
-  job_id <- .resolve_job_id(job_id_or_symbol)
-  db <- .db_connect()
-  on.exit(.db_close(db))
-
-  job <- .store_get_job(db, job_id)
-  if (is.null(job)) stop("Job not found.", call. = FALSE)
-  .verify_token(db, job, access_token, require_for_global = TRUE)
-  if (job$state %in% c("FINISHED", "PUBLISHED", "FAILED", "CANCELLED"))
-    stop("Job already in terminal state: ", job$state, call. = FALSE)
-
-  .executor_kill(db, job_id)
-  .store_update_job(db, job_id, state = "CANCELLED", worker_pid = NA_integer_,
-    finished_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"))
-  .db_log_event(db, job_id, "cancelled")
-  list(job_id = job_id, state = "CANCELLED")
-}
-
 #' Load a Job Output into the Server Session
 #'
 #' When \code{as_descriptor = TRUE} and the output is a Parquet file,
@@ -189,19 +126,17 @@ jobCancelDS <- function(job_id_or_symbol, access_token = NULL) {
 #'
 #' @param job_id_or_symbol Character; job ID or symbol name
 #' @param output_name Character; name of the output to load
-#' @param access_token Character; access token for the job
 #' @param as_descriptor Logical; if TRUE and output is Parquet, return a
 #'   FlowerDatasetDescriptor instead of loading data into memory
 #' @export
 jobLoadOutputDS <- function(job_id_or_symbol, output_name,
-                             access_token = NULL, as_descriptor = FALSE) {
+                             as_descriptor = FALSE) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
 
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found.", call. = FALSE)
-  .verify_token(db, job, access_token)
   if (!job$state %in% c("FINISHED", "PUBLISHED"))
     stop("Job not finished (state: ", job$state, ").", call. = FALSE)
 
@@ -266,13 +201,12 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name,
 
 #' Get Job Status
 #' @export
-jobStatusDS <- function(job_id_or_symbol, access_token = NULL) {
+jobStatusDS <- function(job_id_or_symbol) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found: ", job_id, call. = FALSE)
-  .verify_token(db, job, access_token)
 
   list(job_id = job$job_id, state = job$state,
     step_index = as.integer(job$step_index),
@@ -286,13 +220,12 @@ jobStatusDS <- function(job_id_or_symbol, access_token = NULL) {
 
 #' Get Job Result
 #' @export
-jobResultDS <- function(job_id_or_symbol, access_token = NULL) {
+jobResultDS <- function(job_id_or_symbol) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found.", call. = FALSE)
-  .verify_token(db, job, access_token)
 
   if (!job$state %in% c("FINISHED", "PUBLISHED"))
     return(list(job_id = job_id, state = job$state, ready = FALSE,
@@ -310,14 +243,13 @@ jobResultDS <- function(job_id_or_symbol, access_token = NULL) {
 
 #' Get Job Logs
 #' @export
-jobLogsDS <- function(job_id_or_symbol, last_n = 50L, access_token = NULL) {
+jobLogsDS <- function(job_id_or_symbol, last_n = 50L) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   last_n <- as.integer(last_n %||% 50L)
   db <- .db_connect()
   on.exit(.db_close(db))
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found.", call. = FALSE)
-  .verify_token(db, job, access_token)
 
   home <- .dsjobs_home()
   lines <- character(0)
@@ -341,34 +273,15 @@ jobLogsDS <- function(job_id_or_symbol, last_n = 50L, access_token = NULL) {
 
 #' List Jobs
 #'
-#' Returns global jobs + jobs owned by caller_id (if provided).
-#' Private jobs of OTHER users are hidden. The caller_id is provided
-#' by the client based on the authenticated Opal/Armadillo username.
-#' It cannot be spoofed in practice because the filesystem control
-#' plane prevents submitting jobs as another user.
+#' Returns all jobs, optionally filtered by label.
 #'
 #' @param label Character or NULL; filter by label.
-#' @param caller_id Character or NULL; the authenticated username from client.
 #' @export
-jobListDS <- function(label = NULL, caller_id = NULL) {
+jobListDS <- function(label = NULL) {
   db <- .db_connect()
   on.exit(.db_close(db))
 
-  if (is.null(caller_id) || !nzchar(caller_id)) {
-    # No caller_id: show only global jobs (safe default)
-    jobs <- .store_list_jobs(db, label = label)
-    if (nrow(jobs) > 0) {
-      jobs <- jobs[jobs$visibility == "global" | is.na(jobs$visibility), , drop = FALSE]
-    }
-  } else {
-    # Show caller's own jobs + all global jobs
-    jobs <- .store_list_jobs(db, label = label)
-    if (nrow(jobs) > 0) {
-      jobs <- jobs[jobs$owner_id == caller_id |
-                    jobs$visibility == "global" |
-                    is.na(jobs$visibility), , drop = FALSE]
-    }
-  }
+  jobs <- .store_list_jobs(db, label = label)
   if (nrow(jobs) == 0)
     return(data.frame(job_id = character(0), state = character(0),
       label = character(0), visibility = character(0),
@@ -381,13 +294,12 @@ jobListDS <- function(label = NULL, caller_id = NULL) {
 
 #' List Available Outputs for a Job
 #' @export
-jobOutputsDS <- function(job_id_or_symbol, access_token = NULL) {
+jobOutputsDS <- function(job_id_or_symbol) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found.", call. = FALSE)
-  .verify_token(db, job, access_token)
   DBI::dbGetQuery(db,
     "SELECT name, kind, safe_for_client, size_bytes FROM outputs
      WHERE job_id = ? ORDER BY id",

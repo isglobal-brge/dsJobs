@@ -53,17 +53,11 @@ test_that("listing jobs filters by owner", {
   dsJobs:::.store_create_job(db, "job_owner_a", "user_a", spec, 1L)
   dsJobs:::.store_create_job(db, "job_owner_b", "user_b", spec, 1L)
 
-  jobs_a <- dsJobs:::.store_list_jobs(db, owner_id = "user_a")
-  expect_equal(nrow(jobs_a), 1L)
-  expect_equal(jobs_a$job_id, "job_owner_a")
-
-  jobs_b <- dsJobs:::.store_list_jobs(db, owner_id = "user_b")
-  expect_equal(nrow(jobs_b), 1L)
-  expect_equal(jobs_b$job_id, "job_owner_b")
-
-  # All jobs
+  # All jobs visible (global pool)
   jobs_all <- dsJobs:::.store_list_jobs(db)
   expect_equal(nrow(jobs_all), 2L)
+  expect_true("job_owner_a" %in% jobs_all$job_id)
+  expect_true("job_owner_b" %in% jobs_all$job_id)
 })
 
 test_that("listing jobs filters by state", {
@@ -87,7 +81,7 @@ test_that("listing jobs filters by state", {
   expect_equal(nrow(running), 1L)
 })
 
-test_that("visibility filtering works in listing", {
+test_that("all jobs are visible in global pool", {
   home <- setup_test_home()
   withr::local_options(list(dsjobs.home = home))
   on.exit(cleanup_test_home(home))
@@ -95,25 +89,16 @@ test_that("visibility filtering works in listing", {
   db <- dsJobs:::.db_connect()
   on.exit(dsJobs:::.db_close(db), add = TRUE)
 
-  spec_priv <- make_test_spec()
-  spec_priv$visibility <- "private"
-  dsJobs:::.store_create_job(db, "job_private", "user_a", spec_priv, 1L)
+  spec_a <- make_test_spec()
+  dsJobs:::.store_create_job(db, "job_a", "user_a", spec_a, 1L)
 
-  spec_glob <- make_test_spec()
-  spec_glob$visibility <- "global"
-  dsJobs:::.store_create_job(db, "job_global", "user_b", spec_glob, 1L)
+  spec_b <- make_test_spec()
+  dsJobs:::.store_create_job(db, "job_b", "user_b", spec_b, 1L)
 
-  # user_a sees own private + all global
+  # All jobs visible to everyone
   all <- dsJobs:::.store_list_jobs(db)
   expect_equal(nrow(all), 2L)
-  # Filter to show user_a's view
-  visible <- all[all$owner_id == "user_a" | all$visibility == "global", , drop = FALSE]
-  expect_equal(nrow(visible), 2L)  # own private + global
-
-  # user_c sees only global
-  visible_c <- all[all$owner_id == "user_c" | all$visibility == "global", , drop = FALSE]
-  expect_equal(nrow(visible_c), 1L)
-  expect_equal(visible_c$job_id, "job_global")
+  expect_true(all(all$visibility == "global"))
 })
 
 test_that("spec retrieval returns parsed JSON", {

@@ -2,7 +2,6 @@
 
 export(jobAdminCancelDS)
 export(jobAdminListDS)
-export(jobCancelDS)
 export(jobCapabilitiesDS)
 export(jobListDS)
 export(jobLoadOutputDS)

@@ -11,7 +11,16 @@
 
 #' @keywords internal
 .onLoad <- function(libname, pkgname) {
-  # Validate config only. Never start daemons.
+  # Ensure DSJOBS_HOME exists with required subdirectories.
+  # The configure script may not run when installed via Opal/Rock API,
+  # so we create the directory structure on first load.
+  home <- .dsj_option("home", "/var/lib/dsjobs")
+  tryCatch({
+    for (d in c(home, file.path(home, "artifacts"),
+                file.path(home, "runners"), file.path(home, "publish"))) {
+      if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+    }
+  }, error = function(e) NULL)
   invisible(NULL)
 }
 
@@ -87,18 +96,6 @@
 #' @keywords internal
 .generate_job_id <- function() {
   paste0("job_", uuid::UUIDgenerate())
-}
-
-#' Generate a high-entropy access token (256 bits hex)
-#' @keywords internal
-.generate_access_token <- function() {
-  paste(sample(c(0:9, letters[1:6]), 64, replace = TRUE), collapse = "")
-}
-
-#' Hash an access token for storage (SHA-256)
-#' @keywords internal
-.hash_token <- function(token) {
-  digest::digest(token, algo = "sha256", serialize = FALSE)
 }
 
 #' Check if PID is alive

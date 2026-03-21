@@ -86,31 +86,15 @@
   on.exit(.db_close(db))
   settings <- .dsjobs_settings()
   gc_counter <- 0L
-  inbox_counter <- 0L
   .dsjobs_env$.worker_started_at <- Sys.time()
   .worker_log("Worker started (PID ", Sys.getpid(), ")")
-
-  # Connect to control plane backend (service credential)
-  cp_conn <- tryCatch(.worker_cp_connect(), error = function(e) {
-    .worker_log("No control plane backend: ", conditionMessage(e))
-    NULL
-  })
-  if (!is.null(cp_conn)) .worker_log("Control plane connected")
-  on.exit(if (!is.null(cp_conn)) .worker_cp_disconnect(cp_conn), add = TRUE)
 
   repeat {
     tryCatch({
       .worker_write_health()
 
-      # Scan inboxes periodically (every 5 cycles)
-      inbox_counter <- inbox_counter + 1L
-      if (!is.null(cp_conn) && inbox_counter >= 5L) {
-        .worker_import_inboxes(db, cp_conn)
-        inbox_counter <- 0L
-      }
-
-      .worker_reap(db, cp_conn)
-      .worker_dispatch(db, cp_conn)
+      .worker_reap(db)
+      .worker_dispatch(db)
 
       gc_counter <- gc_counter + 1L
       if (gc_counter >= 100L) { .worker_gc(db); gc_counter <- 0L }
@@ -119,45 +103,8 @@
   }
 }
 
-#' Import new submissions from inboxes into SQLite
 #' @keywords internal
-.worker_import_inboxes <- function(db, cp_conn) {
-  submissions <- .worker_scan_inboxes(cp_conn)
-  if (length(submissions) == 0) return()
-
-  for (sub in submissions) {
-    spec <- sub$spec
-    job_id <- spec$job_id
-    if (is.null(job_id)) next
-
-    # Check if already imported
-    existing <- .store_get_job(db, job_id)
-    if (!is.null(existing)) {
-      # Already in SQLite -- remove from inbox
-      .worker_consume_inbox(cp_conn, sub$inbox_file)
-      next
-    }
-
-    # Import to SQLite
-    owner_id <- sub$owner
-    token_hash <- spec$.access_token_hash
-    spec_for_hash <- spec[setdiff(names(spec), c("job_id", ".owner", ".access_token_hash"))]
-    spec_hash <- if (identical(spec$visibility, "global"))
-      digest::digest(jsonlite::toJSON(spec_for_hash, auto_unbox = TRUE),
-        algo = "sha256", serialize = FALSE) else NULL
-
-    tryCatch({
-      .store_create_job(db, job_id, owner_id, spec, length(spec$steps),
-        access_token_hash = token_hash, spec_hash = spec_hash)
-      .worker_log("Imported job ", job_id, " from ", owner_id)
-      .worker_consume_inbox(cp_conn, sub$inbox_file)
-    }, error = function(e)
-      .worker_log("Import failed for ", job_id, ": ", conditionMessage(e)))
-  }
-}
-
-#' @keywords internal
-.worker_dispatch <- function(db, cp_conn = NULL) {
+.worker_dispatch <- function(db) {
   settings <- .dsjobs_settings()
   DBI::dbExecute(db, "BEGIN IMMEDIATE")
   tryCatch({
@@ -177,13 +124,10 @@
           started_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"))
         .db_log_event(db, jid, "started")
         .executor_run_step(db, jid, 1L, spec)
-        # Write mirror after execution
-        .worker_sync_mirror(db, cp_conn, jid)
       }, error = function(e) {
         .store_update_job(db, jid, state = "FAILED",
           error_message = paste("Dispatch failed:", conditionMessage(e)),
           finished_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"))
-        .worker_sync_mirror(db, cp_conn, jid)
       })
     }
     DBI::dbExecute(db, "COMMIT")
@@ -194,37 +138,7 @@
 }
 
 #' @keywords internal
-#' Sync job state to Opal mirror
-#' @keywords internal
-.worker_sync_mirror <- function(db, cp_conn, job_id) {
-  if (is.null(cp_conn)) return()
-  job <- .store_get_job(db, job_id)
-  if (is.null(job)) return()
-
-  state_obj <- list(
-    job_id = job$job_id, state = job$state,
-    step_index = as.integer(job$step_index),
-    total_steps = as.integer(job$total_steps),
-    label = job$label, tags = job$tags,
-    visibility = job$visibility, owner_id = job$owner_id,
-    submitted_at = job$submitted_at, started_at = job$started_at,
-    finished_at = job$finished_at, error = job$error_message
-  )
-  .worker_write_mirror(cp_conn, job$owner_id, job_id, state_obj)
-
-  # If finished, also write result mirror
-  if (job$state %in% c("FINISHED", "PUBLISHED")) {
-    home <- .dsjobs_home()
-    result_path <- file.path(home, "artifacts", job_id, "result", "result.rds")
-    if (file.exists(result_path)) {
-      result <- readRDS(result_path)
-      .worker_write_result_mirror(cp_conn, job$owner_id, job_id, result)
-    }
-  }
-}
-
-#' @keywords internal
-.worker_reap <- function(db, cp_conn = NULL) {
+.worker_reap <- function(db) {
   running <- DBI::dbGetQuery(db,
     "SELECT job_id, worker_pid, step_index FROM jobs
      WHERE state = 'RUNNING' AND worker_pid IS NOT NULL")
@@ -278,7 +192,6 @@
           }
         }
         DBI::dbExecute(db, "COMMIT")
-        .worker_sync_mirror(db, cp_conn, jid)
       }, error = function(e) {
         tryCatch(DBI::dbExecute(db, "ROLLBACK"), error = function(e2) NULL)
       })

@@ -41,7 +41,6 @@ AggregateMethods:
     list=base::list
 AssignMethods:
     jobSubmitDS,
-    jobCancelDS,
     jobLoadOutputDS
 Config/testthat/edition: 3
 RoxygenNote: 7.3.3

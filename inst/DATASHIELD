@@ -1,6 +1,5 @@
 AssignMethods:
   jobSubmitDS,
-  jobCancelDS,
   jobLoadOutputDS,
   jobAdminCancelDS
 AggregateMethods:

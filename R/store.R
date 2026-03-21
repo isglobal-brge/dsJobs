@@ -3,7 +3,7 @@
 
 #' @keywords internal
 .store_create_job <- function(db, job_id, owner_id, spec, total_steps,
-                               access_token_hash = NULL, spec_hash = NULL) {
+                               spec_hash = NULL) {
   spec_json <- as.character(jsonlite::toJSON(spec, auto_unbox = TRUE, null = "null"))
   now <- format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC")
 
@@ -12,18 +12,15 @@
     label <- spec$label %||% NA_character_
     tags <- if (!is.null(spec$tags))
       paste(spec$tags, collapse = ",") else NA_character_
-    visibility <- spec$visibility %||% "private"
-    if (!visibility %in% c("private", "global"))
-      stop("visibility must be 'private' or 'global'.", call. = FALSE)
+    visibility <- "global"
     DBI::dbExecute(db,
       "INSERT INTO jobs (job_id, owner_id, state, step_index, total_steps,
                          resource_class, label, tags, visibility,
-                         access_token_hash, spec_hash, submitted_at, spec_json)
-       VALUES (?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         spec_hash, submitted_at, spec_json)
+       VALUES (?, ?, 'PENDING', 0, ?, ?, ?, ?, ?, ?, ?, ?)",
       params = list(job_id, owner_id, total_steps,
                      spec$resource_class %||% "default",
                      label, tags, visibility,
-                     access_token_hash %||% NA_character_,
                      spec_hash %||% NA_character_,
                      now, spec_json))
     for (i in seq_along(spec$steps)) {
@@ -83,22 +80,10 @@
 }
 
 #' @keywords internal
-.store_list_jobs <- function(db, owner_id = NULL, states = NULL,
-                              label = NULL, include_global = TRUE) {
-  # Build visibility filter:
-  # - private jobs: only if owner matches
-  # - global jobs: always visible (if include_global)
+.store_list_jobs <- function(db, states = NULL, label = NULL) {
   where_parts <- character(0)
   params <- list()
 
-  if (!is.null(owner_id)) {
-    if (include_global) {
-      where_parts <- c(where_parts, "(owner_id = ? OR visibility = 'global')")
-    } else {
-      where_parts <- c(where_parts, "owner_id = ?")
-    }
-    params <- c(params, list(owner_id))
-  }
   if (!is.null(states)) {
     ph <- paste(rep("?", length(states)), collapse = ", ")
     where_parts <- c(where_parts, paste0("state IN (", ph, ")"))
