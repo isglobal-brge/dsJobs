@@ -12,15 +12,19 @@
 #' @keywords internal
 .onLoad <- function(libname, pkgname) {
   # Ensure DSJOBS_HOME exists with required subdirectories.
-  # The configure script may not run when installed via Opal/Rock API,
-  # so we create the directory structure on first load.
-  home <- .dsj_option("home", "/var/lib/dsjobs")
-  tryCatch({
-    for (d in c(home, file.path(home, "artifacts"),
-                file.path(home, "runners"), file.path(home, "publish"))) {
-      if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+  # The configure script should create these during R CMD INSTALL,
+  # but Opal/Rock API installs may skip configure scripts entirely.
+  # This fallback creates the structure at package load time.
+  home <- .dsj_option("home", "/srv/dsjobs")
+  subdirs <- c("artifacts", "runners", "publish")
+  for (d in c(home, file.path(home, subdirs))) {
+    if (!dir.exists(d)) {
+      tryCatch(
+        dir.create(d, recursive = TRUE, showWarnings = FALSE, mode = "0750"),
+        error = function(e) NULL
+      )
     }
-  }, error = function(e) NULL)
+  }
   invisible(NULL)
 }
 
@@ -28,7 +32,7 @@
 
 #' @keywords internal
 .dsjobs_home <- function(must_exist = TRUE) {
-  home <- .dsj_option("home", "/var/lib/dsjobs")
+  home <- .dsj_option("home", "/srv/dsjobs")
   if (must_exist && !dir.exists(home)) {
     stop("DSJOBS_HOME does not exist: ", home, call. = FALSE)
   }
