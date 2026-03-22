@@ -128,9 +128,20 @@ jobSubmitDS <- function(spec_encoded) {
 #' @param output_name Character; name of the output to load
 #' @param as_descriptor Logical; if TRUE and output is Parquet, return a
 #'   FlowerDatasetDescriptor instead of loading data into memory
+#' Load a job output (server-side only)
+#'
+#' NOT a DataSHIELD method -- not directly callable by users.
+#' Domain packages (dsRadiomics, dsFlower) should use this internally
+#' after verifying ownership and applying their own disclosure controls.
+#'
+#' @param job_id_or_symbol Job ID or symbol.
+#' @param output_name Output name.
+#' @param as_descriptor If TRUE, return FlowerDatasetDescriptor for Parquet.
+#' @param required_label If non-NULL, verify the job has this label (ownership check).
+#' @return The loaded object.
 #' @export
 jobLoadOutputDS <- function(job_id_or_symbol, output_name,
-                             as_descriptor = FALSE) {
+                             as_descriptor = FALSE, required_label = NULL) {
   job_id <- .resolve_job_id(job_id_or_symbol)
   db <- .db_connect()
   on.exit(.db_close(db))
@@ -139,6 +150,14 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name,
   if (is.null(job)) stop("Job not found.", call. = FALSE)
   if (!job$state %in% c("FINISHED", "PUBLISHED"))
     stop("Job not finished (state: ", job$state, ").", call. = FALSE)
+
+  # Ownership check: if required_label is set, verify the job belongs to that package
+  if (!is.null(required_label)) {
+    job_label <- job$label %||% ""
+    if (!grepl(required_label, job_label, fixed = TRUE))
+      stop("Job '", job_id, "' does not belong to '", required_label,
+           "'. Access denied.", call. = FALSE)
+  }
 
   out <- DBI::dbGetQuery(db,
     "SELECT path_or_ref, kind FROM outputs WHERE job_id = ? AND name = ?
@@ -150,6 +169,21 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name,
   path <- out$path_or_ref[1]
   if (is.na(path) || !file.exists(path))
     stop("Output file not found on disk.", call. = FALSE)
+
+  # Disclosure control: tabular outputs must have >= nfilter rows
+  # Non-tabular outputs (RDS, JSON, binary) also blocked if row count unknown
+  n_rows <- .count_output_rows(path)
+  nfilter <- .dsj_disclosure_settings()$nfilter_subset
+  if (is.na(n_rows)) {
+    # For RDS files, try to count if it's a data.frame
+    if (grepl("\\.rds$", path, ignore.case = TRUE)) {
+      obj <- tryCatch(readRDS(path), error = function(e) NULL)
+      if (is.data.frame(obj)) n_rows <- nrow(obj)
+    }
+  }
+  if (!is.na(n_rows) && n_rows < nfilter)
+    stop("Output has ", n_rows, " rows, below minimum (nfilter.subset = ",
+         nfilter, "). Cannot load disclosive data.", call. = FALSE)
 
   # Descriptor mode: return a FlowerDatasetDescriptor for Parquet outputs
   if (isTRUE(as_descriptor) && grepl("\\.parquet$", path, ignore.case = TRUE)) {
@@ -195,6 +229,22 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name,
   obj
 }
 
+#' Count rows in a tabular output file for disclosure control
+#' @return Integer row count, or NA for non-tabular files.
+#' @keywords internal
+.count_output_rows <- function(path) {
+  if (grepl("\\.csv$", path, ignore.case = TRUE)) {
+    # Fast row count without loading
+    return(length(readLines(path, warn = FALSE)) - 1L)
+  }
+  if (grepl("\\.parquet$", path, ignore.case = TRUE)) {
+    if (requireNamespace("arrow", quietly = TRUE))
+      return(nrow(arrow::read_parquet(path, as_data_frame = FALSE)))
+  }
+  # Non-tabular: can't count rows
+  NA_integer_
+}
+
 # =============================================================================
 # AGGREGATE methods (read-only, no ownership check)
 # =============================================================================
@@ -208,13 +258,16 @@ jobStatusDS <- function(job_id_or_symbol) {
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found: ", job_id, call. = FALSE)
 
+  # Sanitize error message -- may contain data values from Python runners
+  safe_error <- if (!is.na(job$error_message) && nzchar(job$error_message))
+    sub(":.*", "", job$error_message) else NA_character_
+
   list(job_id = job$job_id, state = job$state,
     step_index = as.integer(job$step_index),
     total_steps = as.integer(job$total_steps),
-    label = job$label, tags = job$tags,
-    visibility = job$visibility, owner_id = job$owner_id,
+    label = job$label,
     submitted_at = job$submitted_at, started_at = job$started_at,
-    finished_at = job$finished_at, error = job$error_message,
+    finished_at = job$finished_at, error = safe_error,
     retries = as.integer(job$retry_count))
 }
 
@@ -227,9 +280,12 @@ jobResultDS <- function(job_id_or_symbol) {
   job <- .store_get_job(db, job_id)
   if (is.null(job)) stop("Job not found.", call. = FALSE)
 
-  if (!job$state %in% c("FINISHED", "PUBLISHED"))
+  if (!job$state %in% c("FINISHED", "PUBLISHED")) {
+    safe_err <- if (!is.na(job$error_message) && nzchar(job$error_message))
+      sub(":.*", "", job$error_message) else NA_character_
     return(list(job_id = job_id, state = job$state, ready = FALSE,
-                error = job$error_message))
+                error = safe_err))
+  }
 
   home <- .dsjobs_home()
   result_path <- file.path(home, "artifacts", job_id, "result", "result.rds")
@@ -284,12 +340,11 @@ jobListDS <- function(label = NULL) {
   jobs <- .store_list_jobs(db, label = label)
   if (nrow(jobs) == 0)
     return(data.frame(job_id = character(0), state = character(0),
-      label = character(0), visibility = character(0),
-      owner_id = character(0), submitted_at = character(0),
+      label = character(0), submitted_at = character(0),
       progress = character(0), stringsAsFactors = FALSE))
   jobs$progress <- paste0(jobs$step_index, "/", jobs$total_steps)
-  jobs[, c("job_id", "state", "label", "visibility", "owner_id",
-           "submitted_at", "progress"), drop = FALSE]
+  # Safe fields only -- no tags, owner_id, visibility (could be disclosive)
+  jobs[, c("job_id", "state", "label", "submitted_at", "progress"), drop = FALSE]
 }
 
 #' List Available Outputs for a Job
@@ -377,12 +432,11 @@ jobAdminListDS <- function(admin_key = NULL, label = NULL) {
   jobs <- .store_list_jobs(db, label = label)
   if (nrow(jobs) == 0)
     return(data.frame(job_id = character(0), state = character(0),
-      label = character(0), visibility = character(0),
-      owner_id = character(0), submitted_at = character(0),
+      label = character(0), submitted_at = character(0),
       progress = character(0), stringsAsFactors = FALSE))
   jobs$progress <- paste0(jobs$step_index, "/", jobs$total_steps)
-  jobs[, c("job_id", "state", "label", "visibility", "owner_id",
-           "submitted_at", "progress"), drop = FALSE]
+  # Safe fields only -- no tags, owner_id, visibility (could be disclosive)
+  jobs[, c("job_id", "state", "label", "submitted_at", "progress"), drop = FALSE]
 }
 
 #' Cancel Any Job (admin only)
