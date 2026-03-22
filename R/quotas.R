@@ -18,8 +18,8 @@
 #' @keywords internal
 .dsjobs_settings <- function() {
   list(
-    max_jobs_per_user = as.integer(.dsj_option("max_jobs_per_user", 50L)),
-    max_jobs_global = as.integer(.dsj_option("max_jobs_global", 200L)),
+    max_jobs_per_user = as.integer(.dsj_option("max_jobs_per_user", 500L)),
+    max_jobs_global = as.integer(.dsj_option("max_jobs_global", 5000L)),
     max_steps_per_job = as.integer(.dsj_option("max_steps_per_job", 20L)),
     max_spec_bytes = as.integer(.dsj_option("max_spec_bytes", 1048576L)),
     default_timeout_secs = as.integer(.dsj_option("default_timeout_secs", 3600L)),
