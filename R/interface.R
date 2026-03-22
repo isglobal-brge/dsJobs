@@ -187,9 +187,6 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name,
 
   # Descriptor mode: return a FlowerDatasetDescriptor for Parquet outputs
   if (isTRUE(as_descriptor) && grepl("\\.parquet$", path, ignore.case = TRUE)) {
-    if (!requireNamespace("arrow", quietly = TRUE)) {
-      stop("arrow package required for as_descriptor = TRUE.", call. = FALSE)
-    }
     pf <- arrow::read_parquet(path, as_data_frame = FALSE)
     col_names <- names(pf)
     n_rows <- nrow(pf)
@@ -213,12 +210,10 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name,
   # Load the file as an R object based on extension
   obj <- if (grepl("\\.rds$", path, ignore.case = TRUE)) {
     readRDS(path)
+  } else if (grepl("\\.parquet$", path, ignore.case = TRUE)) {
+    as.data.frame(arrow::read_parquet(path))
   } else if (grepl("\\.csv$", path, ignore.case = TRUE)) {
     utils::read.csv(path, stringsAsFactors = FALSE)
-  } else if (grepl("\\.parquet$", path, ignore.case = TRUE)) {
-    if (requireNamespace("arrow", quietly = TRUE))
-      as.data.frame(arrow::read_parquet(path))
-    else stop("arrow package required for Parquet files.", call. = FALSE)
   } else if (grepl("\\.json$", path, ignore.case = TRUE)) {
     jsonlite::fromJSON(readLines(path, warn = FALSE), simplifyVector = TRUE)
   } else {
@@ -238,8 +233,7 @@ jobLoadOutputDS <- function(job_id_or_symbol, output_name,
     return(length(readLines(path, warn = FALSE)) - 1L)
   }
   if (grepl("\\.parquet$", path, ignore.case = TRUE)) {
-    if (requireNamespace("arrow", quietly = TRUE))
-      return(nrow(arrow::read_parquet(path, as_data_frame = FALSE)))
+    return(nrow(arrow::read_parquet(path, as_data_frame = FALSE)))
   }
   # Non-tabular: can't count rows
   NA_integer_

@@ -23,7 +23,8 @@ Imports:
     jsonlite,
     processx,
     utils,
-    uuid
+    uuid,
+    arrow
 Suggests:
     yaml,
     dsImaging,

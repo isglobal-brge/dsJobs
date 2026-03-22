@@ -88,8 +88,7 @@
       if (grepl("\\.csv$", f, ignore.case = TRUE)) {
         summary$n_samples <- length(readLines(f, warn = FALSE)) - 1L
       } else if (grepl("\\.parquet$", f, ignore.case = TRUE)) {
-        if (requireNamespace("arrow", quietly = TRUE))
-          summary$n_samples <- nrow(arrow::read_parquet(f, as_data_frame = FALSE))
+        summary$n_samples <- nrow(arrow::read_parquet(f, as_data_frame = FALSE))
       }
     }
   }
