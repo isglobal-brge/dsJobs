@@ -122,10 +122,16 @@
 #' @keywords internal
 .ensure_step_dir <- function(job_id, step_index) {
   home <- .dsjobs_home()
-  step_dir <- file.path(home, "artifacts", job_id,
-                         sprintf("step_%03d", step_index))
-  dir.create(file.path(step_dir, "output"), recursive = TRUE, showWarnings = FALSE)
-  Sys.chmod(step_dir, "0700")
+  job_dir <- file.path(home, "artifacts", job_id)
+  step_dir <- file.path(job_dir, sprintf("step_%03d", step_index))
+  out_dir <- file.path(step_dir, "output")
+  # Create with permissive mode so both worker and DS sessions can access
+  dir.create(job_dir, recursive = TRUE, showWarnings = FALSE, mode = "0755")
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE, mode = "0755")
+  # Ensure the dirs are writable even if already existed with restrictive perms
+  tryCatch(Sys.chmod(job_dir, "0755"), error = function(e) NULL)
+  tryCatch(Sys.chmod(step_dir, "0755"), error = function(e) NULL)
+  tryCatch(Sys.chmod(out_dir, "0755"), error = function(e) NULL)
   step_dir
 }
 

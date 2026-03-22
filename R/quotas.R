@@ -3,12 +3,7 @@
 #' @keywords internal
 .check_quotas <- function(db, owner_id) {
   settings <- .dsjobs_settings()
-  user_n <- DBI::dbGetQuery(db,
-    "SELECT COUNT(*) AS n FROM jobs WHERE owner_id = ? AND state IN ('PENDING','RUNNING')",
-    params = list(owner_id))$n
-  if (user_n >= settings$max_jobs_per_user)
-    stop("Per-user quota exceeded: ", user_n, " active jobs (max ",
-         settings$max_jobs_per_user, ").", call. = FALSE)
+  # Only global limit -- per-user is not enforceable (owner_id is self-reported)
   global_n <- DBI::dbGetQuery(db,
     "SELECT COUNT(*) AS n FROM jobs WHERE state IN ('PENDING','RUNNING')")$n
   if (global_n >= settings$max_jobs_global)
