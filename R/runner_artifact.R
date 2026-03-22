@@ -17,9 +17,11 @@
   output_dir <- file.path(step_dir, "output")
 
   # processx expects named character vector: c(VAR = "value", ...)
-  # "current" inherits the parent environment
+  # "current" inherits the parent environment, but R's LD_LIBRARY_PATH
+  # conflicts with Python native libs (pyarrow's libarrow). Clear it.
   env_vars <- c(
     "current",
+    LD_LIBRARY_PATH = "",
     DSJOBS_STEP_DIR = step_dir,
     DSJOBS_OUTPUT_DIR = output_dir,
     DSJOBS_JOB_ID = job_id,
