@@ -82,6 +82,14 @@
 #' Main worker loop (runs inside the worker process)
 #' @keywords internal
 .worker_main <- function() {
+  # Ensure DSJOBS_HOME directories exist with correct permissions
+  home <- .dsjobs_home()
+  for (subdir in c("artifacts", "publish", "staging", "runners")) {
+    d <- file.path(home, subdir)
+    dir.create(d, recursive = TRUE, showWarnings = FALSE)
+    tryCatch(Sys.chmod(d, "0777"), error = function(e) NULL)
+  }
+
   db <- .db_connect()
   on.exit(.db_close(db))
   settings <- .dsjobs_settings()
