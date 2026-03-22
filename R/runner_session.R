@@ -45,7 +45,7 @@
   if (is.null(dataset_id)) stop("resolve_dataset requires 'dataset_id'.", call. = FALSE)
   if (!requireNamespace("dsImaging", quietly = TRUE))
     stop("dsImaging package required for dataset resolution.", call. = FALSE)
-  manifest_path <- dsImaging:::resolve_dataset(dataset_id)
+  manifest_path <- dsImaging::resolve_dataset(dataset_id)
   # Save result as loadable output
   out <- list(dataset_id = dataset_id, manifest_path = manifest_path)
   out_path <- file.path(step_dir, "output", "resolved.rds")
