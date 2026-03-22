@@ -247,6 +247,21 @@
   }
   if (nrow(expired) > 0) .worker_log("GC removed ", nrow(expired), " jobs")
 
+  # Expire jobs stuck in PENDING too long
+  pending_cutoff <- format(
+    Sys.time() - settings$pending_timeout_hours * 3600,
+    "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC")
+  stale_pending <- DBI::dbExecute(db,
+    "UPDATE jobs SET state = 'FAILED',
+     error_message = 'Pending timeout exceeded',
+     finished_at = ?
+     WHERE state = 'PENDING' AND submitted_at < ?",
+    params = list(
+      format(Sys.time(), "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC"),
+      pending_cutoff))
+  if (stale_pending > 0)
+    .worker_log("Expired ", stale_pending, " stale PENDING jobs")
+
   # Also clean stale asset generations (dsImaging)
   if (requireNamespace("dsImaging", quietly = TRUE)) {
     tryCatch({
