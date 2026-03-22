@@ -323,7 +323,6 @@ jobCapabilitiesDS <- function() {
 
   list(dsjobs_version = as.character(utils::packageVersion("dsJobs")),
        runners = runner_details, publishers = .list_publishers(),
-       max_jobs_per_user = settings$max_jobs_per_user,
        max_jobs_global = settings$max_jobs_global,
        max_steps_per_job = settings$max_steps_per_job,
        worker = worker_health,
