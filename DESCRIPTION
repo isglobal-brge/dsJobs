@@ -19,14 +19,15 @@ Depends:
 Imports:
     DBI,
     RSQLite,
+    arrow,
     digest,
     jsonlite,
     processx,
+    tools,
     utils,
     uuid,
-    arrow
+    yaml
 Suggests:
-    yaml,
     dsImaging,
     testthat (>= 3.0.0),
     withr,

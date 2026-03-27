@@ -1,6 +1,10 @@
 # Module: Artifact-Plane Runners
 # Async processx subprocesses. Worker reaps on next poll.
 
+# Global registry of processx handles so the worker can use proc$get_exit_status()
+# instead of PID-based checking (which fails on Rosetta/cross-arch emulation).
+.proc_registry <- new.env(parent = emptyenv())
+
 #' @keywords internal
 .run_artifact_step <- function(db, job_id, step_index, step, step_dir, input_dir) {
   runner_name <- step$runner
@@ -49,9 +53,34 @@
     stderr = file.path(step_dir, "stderr.log"),
     env = env_vars, cleanup = TRUE, cleanup_tree = TRUE)
 
+  # Store handle in registry for reliable exit status checking
+  key <- paste0(job_id, "_", step_index)
+  .proc_registry[[key]] <- proc
+
   .store_update_job(db, job_id, worker_pid = proc$get_pid())
   .db_log_event(db, job_id, "artifact_started",
     list(step_index = step_index, runner = runner_name, pid = proc$get_pid()))
+}
+
+#' Check if a job's artifact step is still running via processx handle
+#' @keywords internal
+.proc_is_alive <- function(job_id, step_index) {
+  key <- paste0(job_id, "_", step_index)
+  proc <- .proc_registry[[key]]
+  if (is.null(proc)) return(FALSE)  # No handle = assume dead
+  proc$is_alive()
+}
+
+#' Get exit status from processx handle, clean up registry
+#' @keywords internal
+.proc_get_exit <- function(job_id, step_index) {
+  key <- paste0(job_id, "_", step_index)
+  proc <- .proc_registry[[key]]
+  if (is.null(proc)) return(NA_integer_)
+  status <- proc$get_exit_status()
+  # Clean up handle
+  rm(list = key, envir = .proc_registry)
+  status
 }
 
 #' @keywords internal

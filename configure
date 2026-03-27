@@ -39,6 +39,21 @@ if id rock >/dev/null 2>&1; then
   log_info "Ownership set to rock:rock"
 fi
 
+# Ensure R dependencies are installed (Rock only)
+ROCK_LIB="/var/lib/rock/R/library"
+if [ -d "${ROCK_LIB}" ]; then
+  log_info "Checking R dependencies..."
+  for pkg in DBI RSQLite arrow digest jsonlite processx uuid yaml; do
+    Rscript --vanilla -e "
+      if (!requireNamespace('${pkg}', quietly=TRUE, lib.loc='${ROCK_LIB}')) {
+        cat('Installing ${pkg}...\n')
+        install.packages('${pkg}', lib='${ROCK_LIB}', repos='https://cloud.r-project.org', quiet=TRUE)
+      }
+    " 2>/dev/null
+  done
+  log_info "R dependencies OK"
+fi
+
 # Verify
 if [ -d "${DSJOBS_HOME}" ]; then
   log_info "Setup complete: ${DSJOBS_HOME}"

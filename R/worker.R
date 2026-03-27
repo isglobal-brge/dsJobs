@@ -157,10 +157,16 @@
     jid <- running$job_id[i]
     sidx <- as.integer(running$step_index[i])
 
-    if (!.pid_is_alive(pid)) {
+    # Use processx handle if available (reliable), fall back to PID check
+    still_alive <- .proc_is_alive(jid, sidx)
+    if (!still_alive) still_alive <- .pid_is_alive(pid)
+
+    if (!still_alive) {
       step_dir <- file.path(.dsjobs_home(), "artifacts", jid,
                              sprintf("step_%03d", sidx))
-      exit_code <- .read_exit_code(step_dir)
+      # Use processx exit status if available
+      proc_exit <- .proc_get_exit(jid, sidx)
+      exit_code <- if (!is.na(proc_exit)) proc_exit else .read_exit_code(step_dir)
 
       DBI::dbExecute(db, "BEGIN IMMEDIATE")
       tryCatch({
